@@ -1,20 +1,7 @@
 import { useRef, useState } from "react";
 import { ChevronDown, Link2, FilePlus2, Upload, AlertTriangle } from "lucide-react";
 
-const EXAMPLES = [
-  {
-    label: "استبيان رضا العملاء",
-    url: "https://docs.google.com/forms/d/e/1FAIpQLSf8pFV1nJBSzC8ZC5Pk_JhjD3wKrgLdV3AlmH1w2vqQ6bDQxA/viewform",
-  },
-  {
-    label: "تسجيل حضور فعالية",
-    url: "https://docs.google.com/forms/d/e/1FAIpQLSdKQmVJ0Q2m6h4S5v8lFqZ3xY9k7nT1cRbW0pLgHsMnJyKzAg/viewform",
-  },
-  {
-    label: "نموذج تواصل بسيط",
-    url: "https://docs.google.com/forms/d/e/1FAIpQLScS9dQyZ7hV2m1pWnR4TxLbA6oJ0uKgE5YcNfHqXdVmB3TzPw/viewform",
-  },
-];
+import { TEMPLATES } from "@/lib/form-templates";
 
 export function Importer({
   url,
@@ -22,6 +9,7 @@ export function Importer({
   onImport,
   onBlank,
   onImportJson,
+  onTemplate,
   loading,
   error,
   compact,
@@ -31,6 +19,7 @@ export function Importer({
   onImport: () => void;
   onBlank: () => void;
   onImportJson: (file: File) => void;
+  onTemplate: (key: string) => void;
   loading: boolean;
   error: string | null;
   compact: boolean;
@@ -157,10 +146,10 @@ export function Importer({
       {expanded && (
         <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
           <span className="text-xs font-semibold text-muted-foreground">جرّبها الآن:</span>
-          {EXAMPLES.map((ex) => (
+          {TEMPLATES.map((ex) => (
             <button
-              key={ex.url}
-              onClick={() => setUrl(ex.url)}
+              key={ex.key}
+              onClick={() => onTemplate(ex.key)}
               className={`rounded-full border border-border bg-surface px-3 py-1.5 text-[11px] font-semibold transition hover:border-primary/40 hover:bg-accent hover:text-accent-foreground ${focusRing}`}
             >
               {ex.label}
