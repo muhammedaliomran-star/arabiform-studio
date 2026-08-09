@@ -86,5 +86,8 @@ export const fetchGoogleForm = createServerFn({ method: "POST" })
       })
       .filter((q) => q.type !== "unknown" || q.title);
 
-    return { title, description, questions, sourceUrl: url };
+    const responseMatch = html.match(/FB_PUBLIC_LOAD_DATA_\s*=\s*\[null,null,"([^"]+)"/);
+    const formId = responseMatch?.[1];
+
+    return { title, description, questions, sourceUrl: url, formId };
   });
