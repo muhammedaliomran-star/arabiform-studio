@@ -10,7 +10,7 @@ import { Filler } from "@/components/istinsakh/filler";
 import { Responses, ResponsesToolbar } from "@/components/istinsakh/responses";
 import { useFormsStore } from "@/hooks/use-forms-store";
 import { TEMPLATES, templateToForm } from "@/lib/form-templates";
-import type { Answer, FormDoc, Question, Store } from "@/lib/form-types";
+import type { Answer, FormDoc, Question, Store, FormResponse } from "@/lib/form-types";
 import { newQuestion, uid } from "@/lib/form-types";
 import { THEME_KEY, encodeForm, exportFormJson, parseFormJson } from "@/lib/form-storage";
 
