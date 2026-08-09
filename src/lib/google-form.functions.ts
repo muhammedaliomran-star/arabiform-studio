@@ -92,5 +92,5 @@ export const fetchGoogleForm = createServerFn({ method: "POST" })
     // as Google Forms API/HTML doesn't easily allow scraping responses from viewform.
     // If the user meant "I want the responses I ALREADY have in my browser to follow the clone", that's different.
     
-    return { title, description, questions, sourceUrl: url, formId };
+    return { title, description, questions, sourceUrl: url, formId: parsed[0] };
   });
