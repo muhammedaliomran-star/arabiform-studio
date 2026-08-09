@@ -14,6 +14,10 @@ export const fetchGoogleForm = createServerFn({ method: "POST" })
       url = url.replace(/\/?$/, "/viewform");
     }
 
+    // Attempt to find linked spreadsheet for responses if the URL is an edit URL
+    // or try to find a public summary link. 
+    // Since scraping private responses without OAuth is impossible, we'll focus on the data structure.
+    
     const res = await fetch(url, {
       headers: {
         "User-Agent":
@@ -39,7 +43,24 @@ export const fetchGoogleForm = createServerFn({ method: "POST" })
     const title = inner?.[8] ?? inner?.[0] ?? "نموذج بدون عنوان";
     const description = inner?.[0] ?? "";
     const rawQuestions = inner?.[1] ?? [];
-    const formId = parsed[0];
+    
+    // We'll also try to detect if a "Summary" is public
+    const summaryUrl = url.replace("/viewform", "/viewanalytics");
+    let responses: any[] = [];
+    
+    try {
+        const sRes = await fetch(summaryUrl, {
+            headers: { "User-Agent": "Mozilla/5.0" }
+        });
+        if (sRes.ok) {
+            const sHtml = await sRes.text();
+            // Google Forms analytics uses a different structure. 
+            // Realistically, without API access, we can only clone the structure.
+            // If the user meant "Import responses from CSV", we should add that to the UI.
+        }
+    } catch (e) {
+        // Ignore summary fetch errors
+    }
 
     const typeMap: Record<number, string> = {
       0: "short", 1: "paragraph", 2: "radio", 3: "dropdown", 4: "checkbox", 5: "scale", 9: "date", 10: "time",
@@ -62,6 +83,7 @@ export const fetchGoogleForm = createServerFn({ method: "POST" })
         };
       })
       .filter((q: any) => q.type !== "unknown" || q.title);
+
 
     // Attempt to fetch responses if it's a spreadsheet or publicly accessible summary
     // Note: Google Forms does NOT expose individual responses in the HTML of viewform.

@@ -7,7 +7,7 @@ import { Header } from "@/components/istinsakh/header";
 import { Importer } from "@/components/istinsakh/importer";
 import { Editor } from "@/components/istinsakh/editor";
 import { Filler } from "@/components/istinsakh/filler";
-import { Responses } from "@/components/istinsakh/responses";
+import { Responses, ResponsesToolbar } from "@/components/istinsakh/responses";
 import { useFormsStore } from "@/hooks/use-forms-store";
 import { TEMPLATES, templateToForm } from "@/lib/form-templates";
 import type { Answer, FormDoc, Question, Store } from "@/lib/form-types";
@@ -288,7 +288,23 @@ function HomePage() {
                 )}
                 {mode === "fill" && <Filler form={active} onSubmit={submitResponse} />}
                 {mode === "responses" && (
-                  <Responses form={active} responses={store.responses[active.id] ?? []} />
+                  <div className="space-y-6">
+                    <ResponsesToolbar
+                      formId={active.id}
+                      onImport={(newResponses) => {
+                        const existing = store.responses[active.id] ?? [];
+                        commit({
+                          ...store,
+                          responses: {
+                            ...store.responses,
+                            [active.id]: [...existing, ...newResponses],
+                          },
+                        });
+                        toast.success(`تم استيراد ${newResponses.length} رد`);
+                      }}
+                    />
+                    <Responses form={active} responses={store.responses[active.id] ?? []} />
+                  </div>
                 )}
               </>
             )}
