@@ -291,7 +291,7 @@ function HomePage() {
                   <div className="space-y-6">
                     <ResponsesToolbar
                       formId={active.id}
-                      onImport={(newResponses) => {
+                      onImport={(newResponses: FormResponse[]) => {
                         const existing = store.responses[active.id] ?? [];
                         commit({
                           ...store,
