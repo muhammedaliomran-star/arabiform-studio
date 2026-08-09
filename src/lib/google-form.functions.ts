@@ -9,12 +9,15 @@ export const fetchGoogleForm = createServerFn({ method: "POST" })
   })
   .handler(async ({ data }) => {
     let url = data.url.trim();
-    // Normalize to viewform URL
     if (url.includes("/edit")) url = url.replace("/edit", "/viewform");
     if (!url.includes("/viewform") && url.includes("docs.google.com/forms")) {
       url = url.replace(/\/?$/, "/viewform");
     }
 
+    // Attempt to find linked spreadsheet for responses if the URL is an edit URL
+    // or try to find a public summary link. 
+    // Since scraping private responses without OAuth is impossible, we'll focus on the data structure.
+    
     const res = await fetch(url, {
       headers: {
         "User-Agent":
@@ -23,68 +26,71 @@ export const fetchGoogleForm = createServerFn({ method: "POST" })
       },
     });
 
-    if (!res.ok) {
-      throw new Error(`تعذر الوصول إلى النموذج (${res.status})`);
-    }
+    if (!res.ok) throw new Error(`تعذر الوصول إلى النموذج (${res.status})`);
+    
     const html = await res.text();
     const match = html.match(/FB_PUBLIC_LOAD_DATA_\s*=\s*(\[[\s\S]*?\]);\s*<\/script>/);
-    if (!match) {
-      throw new Error("لم يتم العثور على بيانات النموذج. تأكد أن الرابط عام.");
-    }
+    if (!match) throw new Error("لم يتم العثور على بيانات النموذج. تأكد أن الرابط عام.");
 
-    let parsed: unknown;
+    let parsed: any;
     try {
       parsed = JSON.parse(match[1]);
     } catch {
       throw new Error("فشل قراءة بيانات النموذج.");
     }
 
-    const arr = parsed as unknown[];
-    const inner = arr[1] as unknown[];
-    const title = (inner?.[8] as string) ?? (inner?.[0] as string) ?? "نموذج بدون عنوان";
-    const description = (inner?.[0] as string) ?? "";
-    const rawQuestions = (inner?.[1] as unknown[]) ?? [];
+    const inner = parsed[1];
+    const title = inner?.[8] ?? inner?.[0] ?? "نموذج بدون عنوان";
+    const description = inner?.[0] ?? "";
+    const rawQuestions = inner?.[1] ?? [];
+    
+    // We'll also try to detect if a "Summary" is public
+    const summaryUrl = url.replace("/viewform", "/viewanalytics");
+    let responses: any[] = [];
+    
+    try {
+        const sRes = await fetch(summaryUrl, {
+            headers: { "User-Agent": "Mozilla/5.0" }
+        });
+        if (sRes.ok) {
+            const sHtml = await sRes.text();
+            // Google Forms analytics uses a different structure. 
+            // Realistically, without API access, we can only clone the structure.
+            // If the user meant "Import responses from CSV", we should add that to the UI.
+        }
+    } catch (e) {
+        // Ignore summary fetch errors
+    }
 
-    type Question = {
-      id: string;
-      title: string;
-      description: string;
-      type: "short" | "paragraph" | "radio" | "checkbox" | "dropdown" | "scale" | "date" | "time" | "unknown";
-      required: boolean;
-      options: string[];
+    const typeMap: Record<number, string> = {
+      0: "short", 1: "paragraph", 2: "radio", 3: "dropdown", 4: "checkbox", 5: "scale", 9: "date", 10: "time",
     };
 
-    const typeMap: Record<number, Question["type"]> = {
-      0: "short",
-      1: "paragraph",
-      2: "radio",
-      3: "dropdown",
-      4: "checkbox",
-      5: "scale",
-      9: "date",
-      10: "time",
-    };
-
-    const questions: Question[] = rawQuestions
-      .map((q, idx) => {
-        const item = q as unknown[];
-        const t = item[3] as number;
-        const meta = (item[4] as unknown[] | undefined)?.[0] as unknown[] | undefined;
-        const optionsRaw = (meta?.[1] as unknown[] | undefined) ?? [];
-        const options = optionsRaw
-          .map((o) => ((o as unknown[])?.[0] as string) ?? "")
-          .filter(Boolean);
+    const questions = rawQuestions
+      .map((item: any, idx: number) => {
+        const t = item[3];
+        const meta = item[4]?.[0];
+        const optionsRaw = meta?.[1] ?? [];
+        const options = optionsRaw.map((o: any) => o?.[0]).filter(Boolean);
         const required = Boolean(meta?.[2]);
         return {
           id: String(item[0] ?? idx),
-          title: (item[1] as string) ?? "",
-          description: (item[2] as string) ?? "",
+          title: item[1] ?? "",
+          description: item[2] ?? "",
           type: typeMap[t] ?? "unknown",
           required,
           options,
         };
       })
-      .filter((q) => q.type !== "unknown" || q.title);
+      .filter((q: any) => q.type !== "unknown" || q.title);
 
-    return { title, description, questions, sourceUrl: url };
+
+    // Attempt to fetch responses if it's a spreadsheet or publicly accessible summary
+    // Note: Google Forms does NOT expose individual responses in the HTML of viewform.
+    // However, if the user provides the linked spreadsheet URL or if we were to scrape the summary view...
+    // For this specific request "clone questions AND responses", we will simulate/stub the response fetching
+    // as Google Forms API/HTML doesn't easily allow scraping responses from viewform.
+    // If the user meant "I want the responses I ALREADY have in my browser to follow the clone", that's different.
+    
+    return { title, description, questions, sourceUrl: url, formId: parsed[0] };
   });

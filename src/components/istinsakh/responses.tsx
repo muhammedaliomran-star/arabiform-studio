@@ -82,3 +82,58 @@ export function Responses({ form, responses }: { form: FormDoc; responses: FormR
     </div>
   );
 }
+ 
+export function ResponsesToolbar({
+  formId,
+  onImport,
+}: {
+  formId: string;
+  onImport: (responses: FormResponse[]) => void;
+}) {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const text = await file.text();
+    try {
+      if (file.name.endsWith(".json")) {
+        const data = JSON.parse(text);
+        if (Array.isArray(data)) onImport(data);
+      } else {
+        // Simple CSV parser for demonstration
+        const lines = text.split("\n").filter((l) => l.trim());
+        const headers = lines[0].split(",");
+        const newResponses: FormResponse[] = lines.slice(1).map((line) => {
+          const values = line.split(",");
+          const answers: Record<string, string> = {};
+          headers.forEach((h, i) => {
+            if (i > 0) answers[h.trim()] = values[i]?.trim() ?? "";
+          });
+          return {
+            id: Math.random().toString(36).slice(2),
+            submittedAt: Date.now(),
+            answers,
+          };
+        });
+        onImport(newResponses);
+      }
+    } catch (err) {
+      console.error("Failed to import responses", err);
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-4 rounded-2xl border border-border bg-accent/20 p-4">
+      <div className="flex-1">
+        <h3 className="text-sm font-bold">استيراد الردود</h3>
+        <p className="text-xs text-muted-foreground">
+          يمكنك رفع ملف CSV أو JSON لاستيراد ردود سابقة لهذا النموذج.
+        </p>
+      </div>
+      <label className="flex cursor-pointer items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90">
+        <input type="file" className="hidden" accept=".csv,.json" onChange={handleFileUpload} />
+        اختر ملف
+      </label>
+    </div>
+  );
+}

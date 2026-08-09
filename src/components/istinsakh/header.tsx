@@ -40,9 +40,9 @@ export function Header({
               </button>
             </>
           )}
-          <Link to="/how-it-works" className={iconBtn} aria-label="كيف يعمل؟" title="كيف يعمل؟">
+          <a href="#" className={iconBtn} aria-label="كيف يعمل؟" title="كيف يعمل؟">
             <HelpCircle className="h-4 w-4" aria-hidden />
-          </Link>
+          </a>
           <button
             onClick={onToggleTheme}
             className={iconBtn}

@@ -7,10 +7,10 @@ import { Header } from "@/components/istinsakh/header";
 import { Importer } from "@/components/istinsakh/importer";
 import { Editor } from "@/components/istinsakh/editor";
 import { Filler } from "@/components/istinsakh/filler";
-import { Responses } from "@/components/istinsakh/responses";
+import { Responses, ResponsesToolbar } from "@/components/istinsakh/responses";
 import { useFormsStore } from "@/hooks/use-forms-store";
 import { TEMPLATES, templateToForm } from "@/lib/form-templates";
-import type { Answer, FormDoc, Question, Store } from "@/lib/form-types";
+import type { Answer, FormDoc, Question, Store, FormResponse } from "@/lib/form-types";
 import { newQuestion, uid } from "@/lib/form-types";
 import { THEME_KEY, encodeForm, exportFormJson, parseFormJson } from "@/lib/form-storage";
 
@@ -81,7 +81,7 @@ function HomePage() {
         title: data.title,
         description: data.description,
         sourceUrl: data.sourceUrl,
-        questions: data.questions.map((q) => ({ ...q, id: uid() })) as Question[],
+        questions: data.questions.map((q: any) => ({ ...q, id: uid() })) as Question[],
         updatedAt: Date.now(),
       });
       setUrl("");
@@ -288,7 +288,23 @@ function HomePage() {
                 )}
                 {mode === "fill" && <Filler form={active} onSubmit={submitResponse} />}
                 {mode === "responses" && (
-                  <Responses form={active} responses={store.responses[active.id] ?? []} />
+                  <div className="space-y-6">
+                    <ResponsesToolbar
+                      formId={active.id}
+                      onImport={(newResponses: FormResponse[]) => {
+                        const existing = store.responses[active.id] ?? [];
+                        commit({
+                          ...store,
+                          responses: {
+                            ...store.responses,
+                            [active.id]: [...existing, ...newResponses],
+                          },
+                        });
+                        toast.success(`تم استيراد ${newResponses.length} رد`);
+                      }}
+                    />
+                    <Responses form={active} responses={store.responses[active.id] ?? []} />
+                  </div>
                 )}
               </>
             )}
