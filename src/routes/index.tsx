@@ -81,7 +81,7 @@ function HomePage() {
         title: data.title,
         description: data.description,
         sourceUrl: data.sourceUrl,
-        questions: data.questions.map((q) => ({ ...q, id: uid() })) as Question[],
+        questions: data.questions.map((q: any) => ({ ...q, id: uid() })) as Question[],
         updatedAt: Date.now(),
       });
       setUrl("");
