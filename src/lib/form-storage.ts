@@ -76,7 +76,10 @@ export function exportAppsScript(form: FormDoc) {
       max: q.max,
     })),
   };
-  const json = JSON.stringify(slim).replace(/`/g, "\\`").replace(/\\/g, "\\\\");
+  const json = JSON.stringify(slim)
+    .replace(/\\/g, "\\\\")
+    .replace(/`/g, "\\`")
+    .replace(/\$\{/g, "\\${");
   const script = `// أنشأ هذا الملف تلقائياً من تطبيق "استنساخ"
 // الخطوات: الصق هذا الكود في script.google.com ثم اضغط تشغيل على buildForm
 function buildForm() {
