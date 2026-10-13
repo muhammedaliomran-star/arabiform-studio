@@ -68,6 +68,16 @@ function HomePage() {
     commit({ ...store, forms: [doc, ...store.forms] });
     setActiveId(doc.id);
     setMode("edit");
+    // تنبيه: أسئلة بلا عنوان وبلا صور = غالباً نسخة فاقدة للصور وليست الأصل
+    const stripped = doc.questions.filter(
+      (q) => !q.title.trim() && q.options.length > 0 && !(q.images ?? []).length && q.type === "radio",
+    ).length;
+    if (stripped >= 3) {
+      toast.warning(
+        `تنبيه: ${stripped} سؤال بدون عنوان وبدون صور — يبدو أن الرابط نسخة فاقدة لصورها. استنسخ من النموذج الأصلي مباشرة لاستعادة الصور.`,
+        { duration: 9000 },
+      );
+    }
   };
 
   const handleImport = async () => {
