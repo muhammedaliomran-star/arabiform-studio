@@ -14,7 +14,7 @@ import {
   verticalListSortingStrategy,
   arrayMove,
 } from "@dnd-kit/sortable";
-import { Download, Share2, Layers, Plus } from "lucide-react";
+import { Download, Share2, Layers, Plus, FileUp } from "lucide-react";
 import type { FormDoc, Question } from "@/lib/form-types";
 import { QuestionEditor } from "./question-editor";
 
@@ -33,6 +33,7 @@ export function Editor({
   onMove,
   onReorder,
   onExport,
+  onExportGoogle,
   onShare,
 }: {
   form: FormDoc;
@@ -45,6 +46,7 @@ export function Editor({
   onMove: (id: string, dir: -1 | 1) => void;
   onReorder: (questions: Question[]) => void;
   onExport: () => void;
+  onExportGoogle: () => void;
   onShare: () => void;
 }) {
   const sensors = useSensors(
@@ -87,6 +89,9 @@ export function Editor({
         <div className="mt-4 flex flex-wrap gap-2 border-t border-border pt-4">
           <button onClick={onExport} className={toolBtn}>
             <Download className="h-3.5 w-3.5" aria-hidden /> تصدير JSON
+          </button>
+          <button onClick={onExportGoogle} className={toolBtn}>
+            <FileUp className="h-3.5 w-3.5" aria-hidden /> تصدير إلى Google Forms
           </button>
           <button onClick={onShare} className={toolBtn}>
             <Share2 className="h-3.5 w-3.5" aria-hidden /> نسخ رابط المشاركة
