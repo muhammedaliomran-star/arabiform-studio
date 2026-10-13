@@ -81,42 +81,98 @@ export function exportAppsScript(form: FormDoc) {
     .replace(/`/g, "\\`")
     .replace(/\$\{/g, "\\${");
   const script = `// أنشأ هذا الملف تلقائياً من تطبيق "استنساخ"
-// الخطوات: الصق هذا الكود في script.google.com ثم اضغط تشغيل على buildForm
+// خطوات التشغيل في script.google.com:
+// 1) الصق هذا الكود كاملاً (امسح أي كود قديم مثل myFunction)
+// 2) اختر الدالة buildForm من القائمة المنسدلة فوق زر التشغيل ثم اضغط "تشغيل"
+// 3) أول مرة سيطلب إذن الوصول — اضغط "مراجعة الأذونات" واسمح لحسابك
+// 4) بعد التشغيل افتح سجل التنفيذ (Execution log) وستجد رابطي التحرير والتعبئة
+function myFunction() {
+  buildForm();
+}
 function buildForm() {
   const data = JSON.parse(\`${json}\`);
   const gf = FormApp.create(data.title || "نموذج");
   if (data.description) gf.setDescription(data.description);
 
+  let created = 0;
+  let skipped = 0;
   for (const q of data.questions) {
-    let item = null;
-    switch (q.type) {
-      case "short":
-        item = gf.addTextItem(); break;
-      case "paragraph":
-        item = gf.addParagraphTextItem(); break;
-      case "radio":
-        item = gf.addMultipleChoiceItem().setChoiceValues(q.options); break;
-      case "checkbox":
-        item = gf.addCheckboxItem().setChoiceValues(q.options); break;
-      case "dropdown":
-        item = gf.addListItem().setChoiceValues(q.options); break;
-      case "scale":
-        item = gf.addScaleItem().setBounds(1, Math.max(2, q.options.length || 5)); break;
-      case "date":
-        item = gf.addDateItem(); break;
-      case "time":
-        item = gf.addTimeItem(); break;
-      case "section":
-        item = gf.addPageBreakItem(); break;
-      default:
-        item = gf.addTextItem(); // rating/signature/file → إجابة قصيرة
+    try {
+      const title = (q.title || "").trim() || q.description || "سؤال بدون عنوان";
+      const opts = (q.options || []).filter((o) => o && String(o).trim() !== "");
+      let item = null;
+      switch (q.type) {
+        case "short":
+          item = gf.addTextItem(); break;
+        case "paragraph":
+          item = gf.addParagraphTextItem(); break;
+        case "radio":
+          item = opts.length
+            ? gf.addMultipleChoiceItem().setChoiceValues(opts)
+            : gf.addMultipleChoiceItem().setChoiceValues(["خيار 1", "خيار 2"]);
+          break;
+        case "checkbox":
+          item = opts.length
+            ? gf.addCheckboxItem().setChoiceValues(opts)
+            : gf.addCheckboxItem().setChoiceValues(["خيار 1", "خيار 2"]);
+          break;
+        case "dropdown":
+          item = opts.length
+            ? gf.addListItem().setChoiceValues(opts)
+            : gf.addListItem().setChoiceValues(["خيار 1", "خيار 2"]);
+          break;
+        case "scale": {
+          const labels = opts.length >= 2 ? opts : null;
+          const sc = gf.addScaleItem().setBounds(1, Math.max(2, opts.length || 5));
+          if (labels) sc.setLabels(labels[0], labels[labels.length - 1]);
+          item = sc;
+          break;
+        }
+        case "date":
+          item = gf.addDateItem(); break;
+        case "time":
+          item = gf.addTimeItem(); break;
+        case "rating": {
+          item = gf.addScaleItem().setBounds(1, Math.max(2, q.max || 5));
+          break;
+        }
+        case "section": {
+          const pb = gf.addPageBreakItem();
+          pb.setTitle(title);
+          item = pb;
+          break;
+        }
+        case "unknown":
+          // عناوين الأقسام والنصوص الوصفية (بدون خيارات) تتحول لعنوان قسم،
+          // ولو فيها خيارات تتحول لاختيار من متعدد.
+          if (opts.length) {
+            item = gf.addMultipleChoiceItem().setChoiceValues(opts);
+          } else {
+            item = gf.addSectionHeaderItem();
+          }
+          break;
+        default:
+          // signature/file لا يدعمها Google Forms عبر السكربت → نحوّلها لسؤال نصي مع تنبيه
+          item = gf.addTextItem();
+          if (q.type === "file" || q.type === "signature") {
+            item.setHelpText("ملاحظة: أضف حقل رفع الملف/التوقيع يدوياً من محرر Google Forms.");
+          }
+      }
+      item.setTitle(title);
+      if (q.description && typeof item.setHelpText === "function") {
+        const prev = typeof item.getHelpText === "function" ? item.getHelpText() : "";
+        item.setHelpText(prev ? prev + "\n" + q.description : q.description);
+      }
+      if (q.type !== "section" && item.setRequired) item.setRequired(!!q.required);
+      created++;
+    } catch (err) {
+      skipped++;
+      Logger.log("تُخطّي سؤال بسبب خطأ: " + (q && q.title) + " — " + err);
     }
-    item.setTitle(q.title || "سؤال");
-    if (q.description && item.setHelpText) item.setHelpText(q.description);
-    if (q.type !== "section" && item.setRequired) item.setRequired(!!q.required);
   }
 
-  Logger.log("تم إنشاء النموذج: " + gf.getEditUrl());
+  Logger.log("تم إنشاء " + created + " سؤال" + (skipped ? " (تُخطّي " + skipped + ")" : ""));
+  Logger.log("رابط التحرير: " + gf.getEditUrl());
   Logger.log("رابط التعبئة: " + gf.getPublishedUrl());
 }
 `;

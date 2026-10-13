@@ -285,7 +285,9 @@ function HomePage() {
                     onExport={() => exportFormJson(active)}
                     onExportGoogle={() => {
                       exportAppsScript(active);
-                      toast.success("تم تنزيل سكربت Google Forms — الصقه في script.google.com وشغّله");
+                      toast.success("تم تنزيل السكربت — الصقه في script.google.com، اختر buildForm ثم اضغط تشغيل", {
+                        duration: 8000,
+                      });
                     }}
                     onShare={shareActive}
                   />
