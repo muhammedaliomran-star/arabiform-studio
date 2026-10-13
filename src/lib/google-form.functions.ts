@@ -9,9 +9,11 @@ export const fetchGoogleForm = createServerFn({ method: "POST" })
   })
   .handler(async ({ data }) => {
     let url = data.url.trim();
-    if (url.includes("/edit")) url = url.replace("/edit", "/viewform");
-    if (!url.includes("/viewform") && url.includes("docs.google.com/forms")) {
-      url = url.replace(/\/?$/, "/viewform");
+    const m = url.match(/docs\.google\.com\/forms\/(?:u\/\d+\/)?d\/(e\/)?([A-Za-z0-9_-]+)/);
+    if (m) {
+      url = `https://docs.google.com/forms/d/${m[1] ?? ""}${m[2]}/viewform`;
+    } else if (!/forms\.gle\//.test(url)) {
+      throw new Error("الرابط ليس رابط نموذج جوجل صالح.");
     }
 
     // Attempt to find linked spreadsheet for responses if the URL is an edit URL
