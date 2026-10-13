@@ -3,7 +3,7 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical, Copy, Trash2, ImagePlus, X, ChevronUp, ChevronDown } from "lucide-react";
 import type { Question, QType } from "@/lib/form-types";
-import { TYPE_LABEL, OPTION_TYPES } from "@/lib/form-types";
+import { TYPE_LABEL, OPTION_TYPES, driveImageUrl } from "@/lib/form-types";
 
 const focusRing =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
@@ -12,6 +12,7 @@ export function QuestionEditor({
   q,
   index,
   sections,
+  quiz,
   onChange,
   onRemove,
   onDup,
@@ -20,6 +21,7 @@ export function QuestionEditor({
   q: Question;
   index: number;
   sections: Question[];
+  quiz: boolean;
   onChange: (p: Partial<Question>) => void;
   onRemove: () => void;
   onDup: () => void;
@@ -31,7 +33,10 @@ export function QuestionEditor({
   const fileRef = useRef<HTMLInputElement>(null);
   const hasOptions = OPTION_TYPES.includes(q.type as QType) && q.type !== "scale";
   const isSection = q.type === "section";
+  const noAnswer = q.type === "section" || q.type === "text" || q.type === "image";
   const branchable = q.type === "radio" || q.type === "dropdown";
+  const gradable = quiz && (q.type === "radio" || q.type === "checkbox");
+  const correct = q.correct ?? [];
 
   return (
     <div
@@ -79,6 +84,21 @@ export function QuestionEditor({
             مطلوب
           </label>
         )}
+        {quiz && !noAnswer && (
+          <label className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={q.points ?? 0}
+              aria-label="درجات السؤال"
+              title="درجات السؤال"
+              onChange={(e) => onChange({ points: Number(e.target.value) })}
+              className={`w-16 rounded-lg border border-input bg-surface px-2 py-1.5 tabular ${focusRing}`}
+            />
+            درجة
+          </label>
+        )}
       </div>
 
       <label className="sr-only" htmlFor={`title-${q.id}`}>
@@ -89,7 +109,7 @@ export function QuestionEditor({
         value={q.title}
         onChange={(e) => onChange({ title: e.target.value })}
         className="w-full border-b border-border bg-transparent pb-2 text-base font-bold outline-none focus:border-primary"
-        placeholder={isSection ? "عنوان القسم" : "نص السؤال"}
+        placeholder={isSection ? "عنوان القسم" : q.type === "text" ? "النص الوصفي" : "نص السؤال"}
       />
       <input
         value={q.description}
@@ -110,6 +130,31 @@ export function QuestionEditor({
             <X className="h-3.5 w-3.5" aria-hidden />
           </button>
         </div>
+      )}
+      {(q.images ?? []).map((id) => (
+        <div key={id} className="relative mt-3 inline-block me-2">
+          <img
+            src={driveImageUrl(id)}
+            alt="صورة السؤال من جوجل"
+            className="max-h-56 rounded-xl border border-border"
+            loading="lazy"
+          />
+          <button
+            onClick={() => onChange({ images: (q.images ?? []).filter((x) => x !== id) })}
+            aria-label="إزالة الصورة"
+            className={`absolute -top-2 -left-2 grid h-7 w-7 place-items-center rounded-full border border-border bg-surface text-muted-foreground hover:text-destructive ${focusRing}`}
+          >
+            <X className="h-3.5 w-3.5" aria-hidden />
+          </button>
+        </div>
+      ))}
+
+      {q.validation && (
+        <p className="mt-3 rounded-lg border border-border bg-surface px-3 py-2 text-[11px] text-muted-foreground">
+          قاعدة تحقق منسوخة: النص يجب أن يحتوي على «{q.validation.args[0]}»
+          {q.validation.message ? ` — رسالة الخطأ: ${q.validation.message}` : ""} (تُطبَّق عند التصدير
+          إلى Google Forms)
+        </p>
       )}
 
       {q.type === "rating" && (
@@ -178,6 +223,33 @@ export function QuestionEditor({
               >
                 إزالة
               </button>
+              {gradable && (
+                <label
+                  className={`flex cursor-pointer items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] font-bold transition ${
+                    correct.includes(opt)
+                      ? "border-primary/50 bg-primary/10 text-primary"
+                      : "border-border text-muted-foreground hover:bg-secondary"
+                  }`}
+                  title={q.type === "radio" ? "تحديد الإجابة الصحيحة" : "تحديد إجابة صحيحة"}
+                >
+                  <input
+                    type={q.type === "radio" ? "radio" : "checkbox"}
+                    name={`correct-${q.id}`}
+                    checked={correct.includes(opt)}
+                    onChange={() => {
+                      if (q.type === "radio") onChange({ correct: [opt] });
+                      else
+                        onChange({
+                          correct: correct.includes(opt)
+                            ? correct.filter((c) => c !== opt)
+                            : [...correct, opt],
+                        });
+                    }}
+                    className="accent-primary"
+                  />
+                  ✓ صحيح
+                </label>
+              )}
             </div>
           ))}
           <button

@@ -1,5 +1,6 @@
 import { FileSpreadsheet, FileJson } from "lucide-react";
 import type { FormDoc, FormResponse } from "@/lib/form-types";
+import { isAnswerable } from "@/lib/form-types";
 import { exportResponsesCsv, exportResponsesJson } from "@/lib/form-storage";
 
 const focusRing =
@@ -47,7 +48,7 @@ export function Responses({ form, responses }: { form: FormDoc; responses: FormR
             </div>
             <dl className="space-y-2 text-sm">
               {form.questions
-                .filter((q) => q.type !== "section")
+                .filter(isAnswerable)
                 .map((q) => {
                   const v = r.answers[q.id];
                   const isImage = typeof v === "string" && v.startsWith("data:image");

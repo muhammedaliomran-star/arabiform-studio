@@ -1,5 +1,5 @@
 import type { FormDoc, FormResponse, Store } from "./form-types";
-import { uid } from "./form-types";
+import { isAnswerable, uid } from "./form-types";
 
 export const STORAGE_KEY = "istinsakh:v1";
 export const THEME_KEY = "istinsakh:theme";
@@ -50,6 +50,8 @@ export function parseFormJson(text: string): FormDoc {
     title: raw.title || "نموذج مستورد",
     description: raw.description ?? "",
     sourceUrl: raw.sourceUrl,
+    isQuiz: raw.isQuiz,
+    headerImage: raw.headerImage,
     updatedAt: Date.now(),
     questions: raw.questions.map((q) => ({
       ...q,
@@ -75,9 +77,12 @@ function utf8ToBase64(text: string): string {
 }
 
 export function exportAppsScript(form: FormDoc) {
+  const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const slim = {
     title: form.title,
     description: form.description,
+    isQuiz: !!form.isQuiz,
+    headerImage: form.headerImage || "",
     questions: form.questions.map((q) => ({
       title: q.title,
       description: q.description,
@@ -85,6 +90,17 @@ export function exportAppsScript(form: FormDoc) {
       required: q.required,
       options: q.options,
       max: q.max,
+      images: q.images || [],
+      hasImage: !!q.image,
+      points: q.points || 0,
+      correct: q.correct || [],
+      validation: q.validation
+        ? {
+            op: q.validation.op,
+            args: q.validation.args.map(escRe),
+            message: q.validation.message || "",
+          }
+        : null,
     })),
   };
   // البيانات تُضمَّن مشفَّرة بـ base64 (حروف وأرقام فقط) حتى لا يكسر أي محرف
@@ -99,6 +115,7 @@ export function exportAppsScript(form: FormDoc) {
 // 1) الصق هذا الكود كاملاً (امسح أي كود قديم مثل myFunction)
 // 2) اختر الدالة buildForm من القائمة المنسدلة فوق زر التشغيل ثم اضغط "تشغيل"
 // 3) أول مرة سيطلب إذن الوصول — اضغط "مراجعة الأذونات" واسمح لحسابك
+//    (إن كان النموذج فيه صور سيطلب إذن Drive أيضاً — اسمح به)
 // 4) بعد التشغيل افتح سجل التنفيذ (Execution log) وستجد رابطي التحرير والتعبئة
 // بيانات النموذج: base64 مقسمة على أسطر قصيرة (حروف وأرقام فقط — لا تكسر الكود)
 var DATA_B64 = [
@@ -113,30 +130,126 @@ function buildForm() {
   );
   var gf = FormApp.create(data.title || "نموذج");
   if (data.description) gf.setDescription(data.description);
+  if (data.isQuiz && gf.setIsQuiz) gf.setIsQuiz(true);
 
   var created = 0;
   var skipped = 0;
+
+  // قراءة صورة من Drive ID (تتطلب إذن Drive عند التشغيل)
+  function imageBlob(src) {
+    try {
+      if (typeof DriveApp !== "undefined") return DriveApp.getFileById(src).getBlob();
+    } catch (e) {
+      Logger.log("تعذر قراءة صورة Drive: " + src);
+    }
+    return null;
+  }
+
+  // صورة ترويسة النموذج (تُضاف كأول عنصر لأن FormApp لا يدعم ترويسة مباشرة)
+  if (data.headerImage) {
+    try {
+      var hb = imageBlob(data.headerImage);
+      if (hb) {
+        var hi = gf.addImageItem();
+        hi.setImage(hb);
+        if (hi.setTitle) hi.setTitle(data.title || "صورة");
+      } else {
+        throw "blob فارغ";
+      }
+    } catch (herr) {
+      Logger.log("تعذر إضافة صورة الترويسة — أضفها يدوياً من: https://drive.google.com/file/d/" + data.headerImage + "/view");
+    }
+  }
   for (var qi = 0; qi < data.questions.length; qi++) {
     var q = data.questions[qi];
     try {
       var title = (q.title || "").trim() || q.description || "سؤال بدون عنوان";
       var opts = (q.options || []).filter(function (o) { return o && String(o).trim() !== ""; });
+      var imgNote = "";
+      // صور السؤال (تُضاف قبل السؤال نفسه حتى تظهر فوقه)
+      var qimgs = q.images || [];
+      for (var ii = 0; ii < qimgs.length; ii++) {
+        try {
+          var ib = imageBlob(qimgs[ii]);
+          if (ib) {
+            var im = gf.addImageItem();
+            im.setImage(ib);
+            if (im.setTitle) im.setTitle(title);
+          } else {
+            imgNote += " [صورة: https://drive.google.com/file/d/" + qimgs[ii] + "/view]";
+          }
+        } catch (ie) {
+          imgNote += " [تعذر إرفاق صورة — انسخها يدوياً من محرر Google Forms]";
+          Logger.log("تعذر إرفاق صورة للسؤال: " + title);
+        }
+      }
+      if (q.hasImage) {
+        imgNote += " [ملاحظة: أضف صورة السؤال المرفوعة يدوياً من محرر Google Forms]";
+      }
       var item = null;
       switch (q.type) {
         case "short":
-          item = gf.addTextItem(); break;
+          item = gf.addTextItem();
+          if (data.isQuiz && q.points > 0 && item.setPoints) item.setPoints(q.points);
+          break;
         case "paragraph":
-          item = gf.addParagraphTextItem(); break;
-        case "radio":
-          item = opts.length
-            ? gf.addMultipleChoiceItem().setChoiceValues(opts)
-            : gf.addMultipleChoiceItem().setChoiceValues(["خيار 1", "خيار 2"]);
+          item = gf.addParagraphTextItem();
+          if (data.isQuiz && q.points > 0 && item.setPoints) item.setPoints(q.points);
           break;
-        case "checkbox":
-          item = opts.length
-            ? gf.addCheckboxItem().setChoiceValues(opts)
-            : gf.addCheckboxItem().setChoiceValues(["خيار 1", "خيار 2"]);
+        case "radio": {
+          var rItem = gf.addMultipleChoiceItem();
+          var rQuiz = false;
+          if (data.isQuiz && q.correct && q.correct.length) {
+            try {
+              var rChoices = [];
+              for (var ci = 0; ci < opts.length; ci++) {
+                var isC = false;
+                for (var cj = 0; cj < q.correct.length; cj++) {
+                  if (q.correct[cj] === opts[ci]) { isC = true; break; }
+                }
+                rChoices.push(rItem.createChoice(opts[ci], isC));
+              }
+              rItem.setChoices(rChoices);
+              rQuiz = true;
+            } catch (qe) {
+              Logger.log("تعذر وضع الإجابة الصحيحة (اختيار من متعدد): " + title);
+            }
+          }
+          if (!rQuiz) {
+            if (opts.length) rItem.setChoiceValues(opts);
+            else rItem.setChoiceValues(["خيار 1", "خيار 2"]);
+          }
+          if (data.isQuiz && q.points > 0 && rItem.setPoints) rItem.setPoints(q.points);
+          item = rItem;
           break;
+        }
+        case "checkbox": {
+          var cItem = gf.addCheckboxItem();
+          var cQuiz = false;
+          if (data.isQuiz && q.correct && q.correct.length) {
+            try {
+              var cChoices = [];
+              for (var ki = 0; ki < opts.length; ki++) {
+                var isCk = false;
+                for (var kj = 0; kj < q.correct.length; kj++) {
+                  if (q.correct[kj] === opts[ki]) { isCk = true; break; }
+                }
+                cChoices.push(cItem.createChoice(opts[ki], isCk));
+              }
+              cItem.setChoices(cChoices);
+              cQuiz = true;
+            } catch (qe2) {
+              Logger.log("تعذر وضع الإجابات الصحيحة (مربعات): " + title);
+            }
+          }
+          if (!cQuiz) {
+            if (opts.length) cItem.setChoiceValues(opts);
+            else cItem.setChoiceValues(["خيار 1", "خيار 2"]);
+          }
+          if (data.isQuiz && q.points > 0 && cItem.setPoints) cItem.setPoints(q.points);
+          item = cItem;
+          break;
+        }
         case "dropdown":
           item = opts.length
             ? gf.addListItem().setChoiceValues(opts)
@@ -164,6 +277,29 @@ function buildForm() {
           item = pb;
           break;
         }
+        case "text":
+          // نص وصفي (قطع القراءة والعناوين) — بدون إجابة
+          item = gf.addSectionHeaderItem();
+          break;
+        case "image": {
+          // صورة مستقلة بدون سؤال
+          var firstImg = null;
+          var imgList = q.images || [];
+          for (var mi = 0; mi < imgList.length; mi++) {
+            try {
+              var mb = imageBlob(imgList[mi]);
+              if (mb) {
+                var mItem = gf.addImageItem();
+                mItem.setImage(mb);
+                if (!firstImg) firstImg = mItem;
+              }
+            } catch (me) {
+              Logger.log("تعذر إرفاق صورة مستقلة");
+            }
+          }
+          item = firstImg || gf.addSectionHeaderItem();
+          break;
+        }
         case "unknown":
           // عناوين الأقسام والنصوص الوصفية (بدون خيارات) تتحول لعنوان قسم،
           // ولو فيها خيارات تتحول لاختيار من متعدد.
@@ -181,9 +317,25 @@ function buildForm() {
           }
       }
       item.setTitle(title);
+      // قاعدة التحقق النصية (op=4 تعني "يحتوي على")
+      if ((q.type === "short" || q.type === "paragraph") && q.validation && q.validation.op === 4 && q.validation.args && q.validation.args.length) {
+        try {
+          if (gf.createTextValidation) {
+            var tv = gf.createTextValidation().requireTextContainsPattern(q.validation.args[0]);
+            if (q.validation.message && tv.setHelpText) tv.setHelpText(q.validation.message);
+            if (item.setValidation) item.setValidation(tv);
+          }
+        } catch (ve) {
+          Logger.log("تعذر نسخ قاعدة التحقق للسؤال: " + title);
+        }
+      }
       if (q.description && typeof item.setHelpText === "function") {
         var prev = typeof item.getHelpText === "function" ? item.getHelpText() : "";
-        item.setHelpText(prev ? prev + "\\n" + q.description : q.description);
+        var help = prev ? prev + "\\n" + q.description : q.description;
+        if (imgNote) help += "\\n" + imgNote;
+        item.setHelpText(help);
+      } else if (imgNote && typeof item.setHelpText === "function") {
+        item.setHelpText(imgNote);
       }
       if (q.type !== "section" && item.setRequired) item.setRequired(!!q.required);
       created++;
@@ -208,7 +360,7 @@ function csvCell(v: string) {
 }
 
 export function responsesToCsv(form: FormDoc, responses: FormResponse[]) {
-  const cols = form.questions.filter((q) => q.type !== "section");
+  const cols = form.questions.filter(isAnswerable);
   const header = ["#", "التاريخ", ...cols.map((q) => q.title || "بدون عنوان")];
   const rows = responses.map((r, i) => {
     const cells = cols.map((q) => {
@@ -257,6 +409,8 @@ export function encodeForm(form: FormDoc) {
   const slim = {
     t: form.title,
     d: form.description,
+    z: !!form.isQuiz,
+    h: form.headerImage || "",
     q: form.questions.map((q) => ({ ...q, image: undefined })),
   };
   return toBase64Url(new TextEncoder().encode(JSON.stringify(slim)));
@@ -266,12 +420,16 @@ export function decodeForm(code: string): FormDoc {
   const slim = JSON.parse(new TextDecoder().decode(fromBase64Url(code))) as {
     t: string;
     d: string;
+    z?: boolean;
+    h?: string;
     q: FormDoc["questions"];
   };
   return {
     id: uid(),
     title: slim.t,
     description: slim.d ?? "",
+    isQuiz: slim.z,
+    headerImage: slim.h || undefined,
     questions: slim.q ?? [],
     updatedAt: Date.now(),
   };

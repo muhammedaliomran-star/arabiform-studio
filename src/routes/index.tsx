@@ -11,7 +11,7 @@ import { Responses, ResponsesToolbar } from "@/components/istinsakh/responses";
 import { useFormsStore } from "@/hooks/use-forms-store";
 import { TEMPLATES, templateToForm } from "@/lib/form-templates";
 import type { Answer, FormDoc, Question, Store, FormResponse } from "@/lib/form-types";
-import { newQuestion, uid } from "@/lib/form-types";
+import { isAnswerable, newQuestion, uid } from "@/lib/form-types";
 import { THEME_KEY, encodeForm, exportAppsScript, exportFormJson, parseFormJson } from "@/lib/form-storage";
 
 export const Route = createFileRoute("/")({
@@ -81,6 +81,8 @@ function HomePage() {
         title: data.title,
         description: data.description,
         sourceUrl: data.sourceUrl,
+        headerImage: (data as any).headerImage,
+        isQuiz: (data as any).isQuiz,
         questions: data.questions.map((q: any) => ({ ...q, id: uid() })) as Question[],
         updatedAt: Date.now(),
       });
@@ -243,7 +245,8 @@ function HomePage() {
                   >
                     <span className="block truncate text-sm font-semibold">{f.title}</span>
                     <span className="mt-0.5 block text-[11px] text-muted-foreground">
-                      {f.questions.filter((q) => q.type !== "section").length} سؤال
+                      {f.questions.filter(isAnswerable).length} سؤال
+                      {f.isQuiz ? " • اختبار" : ""}
                     </span>
                   </button>
                   <button

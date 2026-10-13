@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { Answer, FormDoc, Question } from "@/lib/form-types";
-import { paginate } from "@/lib/form-types";
+import { driveImageUrl, isAnswerable, paginate } from "@/lib/form-types";
 import { FieldInput } from "./field-input";
 
 const focusRing =
@@ -24,7 +24,7 @@ export function Filler({
 
   const missing = (items: Question[]) =>
     items.find((q) => {
-      if (!q.required) return false;
+      if (!q.required || !isAnswerable(q)) return false;
       const v = answers[q.id];
       return !v || v === "" || (Array.isArray(v) && v.length === 0);
     });
@@ -75,7 +75,14 @@ export function Filler({
 
   return (
     <div className="space-y-4">
-      <div className="surface-card p-5 md:p-6">
+      <div className="surface-card overflow-hidden p-5 md:p-6">
+        {form.headerImage && (
+          <img
+            src={driveImageUrl(form.headerImage)}
+            alt="صورة النموذج"
+            className="mb-4 max-h-56 w-full rounded-xl border border-border object-cover"
+          />
+        )}
         <h2 className="text-2xl font-extrabold tracking-tight md:text-3xl">{form.title}</h2>
         {form.description && <p className="mt-2 text-sm text-muted-foreground">{form.description}</p>}
         {pages.length > 1 && (
@@ -117,7 +124,18 @@ export function Filler({
           {q.image && (
             <img src={q.image} alt={q.title} className="mb-3 max-h-64 rounded-xl border border-border" />
           )}
-          <FieldInput q={q} value={answers[q.id]} onChange={(v) => set(q.id, v)} />
+          {(q.images ?? []).map((id) => (
+            <img
+              key={id}
+              src={driveImageUrl(id)}
+              alt={q.title || "صورة السؤال"}
+              className="mb-3 max-h-64 rounded-xl border border-border"
+              loading="lazy"
+            />
+          ))}
+          {isAnswerable(q) || (q.type === "unknown" && q.options.length > 0) ? (
+            <FieldInput q={q} value={answers[q.id]} onChange={(v) => set(q.id, v)} />
+          ) : null}
         </div>
       ))}
 

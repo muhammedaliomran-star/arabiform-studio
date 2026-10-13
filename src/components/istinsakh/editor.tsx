@@ -14,8 +14,9 @@ import {
   verticalListSortingStrategy,
   arrayMove,
 } from "@dnd-kit/sortable";
-import { Download, Share2, Layers, Plus, FileUp } from "lucide-react";
+import { Download, Share2, Layers, Plus, FileUp, GraduationCap, X } from "lucide-react";
 import type { FormDoc, Question } from "@/lib/form-types";
+import { driveImageUrl } from "@/lib/form-types";
 import { QuestionEditor } from "./question-editor";
 
 const focusRing =
@@ -86,7 +87,39 @@ export function Editor({
           rows={2}
           placeholder="وصف اختياري..."
         />
-        <div className="mt-4 flex flex-wrap gap-2 border-t border-border pt-4">
+        {form.headerImage && (
+          <div className="relative mt-3">
+            <img
+              src={driveImageUrl(form.headerImage)}
+              alt="صورة ترويسة النموذج"
+              className="max-h-48 w-full rounded-xl border border-border object-cover"
+            />
+            <button
+              onClick={() => onUpdate({ headerImage: undefined })}
+              aria-label="إزالة صورة الترويسة"
+              className={`absolute top-2 left-2 grid h-7 w-7 place-items-center rounded-full border border-border bg-surface text-muted-foreground hover:text-destructive ${focusRing}`}
+            >
+              <X className="h-3.5 w-3.5" aria-hidden />
+            </button>
+          </div>
+        )}
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
+          <label
+            className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-semibold transition ${
+              form.isQuiz
+                ? "border-primary/50 bg-primary/10 text-primary"
+                : "border-border bg-surface hover:bg-secondary"
+            } ${focusRing}`}
+            title="عند التصدير إلى Google Forms سيُنشأ كاختبار بدرجات"
+          >
+            <input
+              type="checkbox"
+              checked={!!form.isQuiz}
+              onChange={(e) => onUpdate({ isQuiz: e.target.checked })}
+              className="accent-primary"
+            />
+            <GraduationCap className="h-3.5 w-3.5" aria-hidden /> وضع اختبار
+          </label>
           <button onClick={onExport} className={toolBtn}>
             <Download className="h-3.5 w-3.5" aria-hidden /> تصدير JSON
           </button>
@@ -118,6 +151,7 @@ export function Editor({
                 q={q}
                 index={i + 1}
                 sections={sections.filter((s) => s.id !== q.id)}
+                quiz={!!form.isQuiz}
                 onChange={(p) => onUpdateQ(q.id, p)}
                 onRemove={() => onRemove(q.id)}
                 onDup={() => onDup(q.id)}

@@ -42,7 +42,8 @@ export const fetchGoogleForm = createServerFn({ method: "POST" })
     }
 
     const inner = parsed[1];
-    const title = inner?.[8] ?? inner?.[0] ?? "نموذج بدون عنوان";
+    // العنوان قد يكون في inner[8] أو inner[0] أو parsed[3] حسب طريقة إنشاء النموذج
+    const title = inner?.[8] ?? inner?.[0] ?? parsed[3] ?? "نموذج بدون عنوان";
     const description = inner?.[0] ?? "";
     const rawQuestions = inner?.[1] ?? [];
     
@@ -65,34 +66,86 @@ export const fetchGoogleForm = createServerFn({ method: "POST" })
     }
 
     const typeMap: Record<number, string> = {
-      0: "short", 1: "paragraph", 2: "radio", 3: "dropdown", 4: "checkbox", 5: "scale", 9: "date", 10: "time",
+      0: "short",
+      1: "paragraph",
+      2: "radio",
+      3: "dropdown",
+      4: "checkbox",
+      5: "scale",
+      6: "text",
+      8: "section",
+      9: "date",
+      10: "time",
+      11: "image",
     };
+
+    const trim = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+    const isDriveId = (v: unknown) =>
+      typeof v === "string" && /^[A-Za-z0-9_-]{25,}$/.test(v) && /[A-Za-z_-]/.test(v);
+
+    // صورة الترويسة: العنصر type=11 يحمل Drive ID في الخانة الخامسة
+    let headerImage: string | undefined;
+    const head = rawQuestions.find((item: any) => item?.[3] === 11);
+    if (head && isDriveId(head[5])) headerImage = head[5] as string;
 
     const questions = rawQuestions
       .map((item: any, idx: number) => {
         const t = item[3];
+        if (t === 11) return null; // صورة الترويسة تُحفظ على مستوى النموذج
         const meta = item[4]?.[0];
         const optionsRaw = meta?.[1] ?? [];
-        const options = optionsRaw.map((o: any) => o?.[0]).filter(Boolean);
+        const options = optionsRaw.map((o: any) => trim(o?.[0])).filter(Boolean);
+        // إجابات صحيحة محتملة (تظهر في بعض النماذج) + درجات السؤال
+        const correctRaw = optionsRaw
+          .filter((o: any) => o?.[4] === 1 && trim(o?.[0]))
+          .map((o: any) => trim(o?.[0]));
+        const points = typeof meta?.[8] === "number" && meta[8] > 0 ? meta[8] : undefined;
         const required = Boolean(meta?.[2]);
+        // صور السؤال: item[8] = [[driveId, null, [w,h,1]], ...]
+        const images = Array.isArray(item[8])
+          ? item[8].map((e: any) => e?.[0]).filter(isDriveId)
+          : [];
+        // قاعدة تحقق نصية: meta[4] = [[op, ?, args, message]]
+        let validation: { op: number; args: string[]; message?: string } | undefined;
+        if ((t === 0 || t === 1) && Array.isArray(meta?.[4]) && meta[4].length) {
+          const rule = meta[4][0];
+          const args = Array.isArray(rule?.[2]) ? rule[2].map((a: any) => String(a)) : [];
+          if (typeof rule?.[0] === "number" && args.length) {
+            validation = {
+              op: rule[0],
+              args,
+              message: typeof rule[3] === "string" ? rule[3].trim() : undefined,
+            };
+          }
+        }
         return {
           id: String(item[0] ?? idx),
-          title: item[1] ?? "",
-          description: item[2] ?? "",
+          title: trim(item[1]),
+          description: trim(item[2]),
           type: typeMap[t] ?? "unknown",
           required,
           options,
+          images: images.length ? images : undefined,
+          points,
+          correct: correctRaw.length ? correctRaw : undefined,
+          validation,
         };
       })
-      .filter((q: any) => q.type !== "unknown" || q.title);
+      .filter((q: any) => q && (q.type !== "unknown" || q.title));
 
+    // الإجابات الصحيحة لا تُعتمد إلا إذا وُجدت درجات (إشارة وضع اختبار)،
+    // وإلا تُهمل حتى لا تُبنى على تخمين — المستخدم يحددها يدوياً من المحرر.
+    const hasPoints = questions.some((q: any) => q.points && q.points > 0);
+    if (!hasPoints) for (const q of questions as any[]) delete q.correct;
 
-    // Attempt to fetch responses if it's a spreadsheet or publicly accessible summary
-    // Note: Google Forms does NOT expose individual responses in the HTML of viewform.
-    // However, if the user provides the linked spreadsheet URL or if we were to scrape the summary view...
-    // For this specific request "clone questions AND responses", we will simulate/stub the response fetching
-    // as Google Forms API/HTML doesn't easily allow scraping responses from viewform.
-    // If the user meant "I want the responses I ALREADY have in my browser to follow the clone", that's different.
-    
-    return { title, description, questions, sourceUrl: url, formId: parsed[0] };
+    return {
+      title: trim(title) || "نموذج بدون عنوان",
+      description: trim(description),
+      questions,
+      sourceUrl: url,
+      formId: parsed[0],
+      headerImage,
+      isQuiz: hasPoints,
+    };
+
   });

@@ -91,7 +91,7 @@ export function FieldInput({
   if (q.type === "signature") return <Signature value={value as string} onChange={onChange} />;
   if (q.type === "file") return <FileField value={value as string} onChange={onChange} />;
 
-  if (q.type === "radio")
+  if (q.type === "radio" || (q.type === "unknown" && q.options.length > 0))
     return (
       <div className="space-y-2" role="radiogroup" aria-label={q.title}>
         {q.options.map((o, i) => (
@@ -136,6 +136,9 @@ export function FieldInput({
       </div>
     );
   }
+
+  // الأنواع غير القابلة للإجابة (نص وصفي/صورة/قسم) لا تعرض حقل إدخال
+  if (q.type === "section" || q.type === "text" || q.type === "image") return null;
 
   return <p className="text-xs text-muted-foreground">نوع سؤال غير مدعوم في المعاينة.</p>;
 }
