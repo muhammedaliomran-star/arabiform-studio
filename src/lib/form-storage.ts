@@ -61,6 +61,68 @@ export function parseFormJson(text: string): FormDoc {
   };
 }
 
+/* ---------- Google Forms export (Apps Script generator) ---------- */
+
+export function exportAppsScript(form: FormDoc) {
+  const slim = {
+    title: form.title,
+    description: form.description,
+    questions: form.questions.map((q) => ({
+      title: q.title,
+      description: q.description,
+      type: q.type,
+      required: q.required,
+      options: q.options,
+      max: q.max,
+    })),
+  };
+  const json = JSON.stringify(slim)
+    .replace(/\\/g, "\\\\")
+    .replace(/`/g, "\\`")
+    .replace(/\$\{/g, "\\${");
+  const script = `// أنشأ هذا الملف تلقائياً من تطبيق "استنساخ"
+// الخطوات: الصق هذا الكود في script.google.com ثم اضغط تشغيل على buildForm
+function buildForm() {
+  const data = JSON.parse(\`${json}\`);
+  const gf = FormApp.create(data.title || "نموذج");
+  if (data.description) gf.setDescription(data.description);
+
+  for (const q of data.questions) {
+    let item = null;
+    switch (q.type) {
+      case "short":
+        item = gf.addTextItem(); break;
+      case "paragraph":
+        item = gf.addParagraphTextItem(); break;
+      case "radio":
+        item = gf.addMultipleChoiceItem().setChoiceValues(q.options); break;
+      case "checkbox":
+        item = gf.addCheckboxItem().setChoiceValues(q.options); break;
+      case "dropdown":
+        item = gf.addListItem().setChoiceValues(q.options); break;
+      case "scale":
+        item = gf.addScaleItem().setBounds(1, Math.max(2, q.options.length || 5)); break;
+      case "date":
+        item = gf.addDateItem(); break;
+      case "time":
+        item = gf.addTimeItem(); break;
+      case "section":
+        item = gf.addPageBreakItem(); break;
+      default:
+        item = gf.addTextItem(); // rating/signature/file → إجابة قصيرة
+    }
+    item.setTitle(q.title || "سؤال");
+    if (q.description && item.setHelpText) item.setHelpText(q.description);
+    if (q.type !== "section" && item.setRequired) item.setRequired(!!q.required);
+  }
+
+  Logger.log("تم إنشاء النموذج: " + gf.getEditUrl());
+  Logger.log("رابط التعبئة: " + gf.getPublishedUrl());
+}
+`;
+  download(`${safeName(form.title)}-google-forms.gs`, script, "text/plain;charset=utf-8");
+}
+
 /* ---------- responses export ---------- */
 
 function csvCell(v: string) {
