@@ -90,29 +90,38 @@ export function exportAppsScript(form: FormDoc) {
   // البيانات تُضمَّن مشفَّرة بـ base64 (حروف وأرقام فقط) حتى لا يكسر أي محرف
   // عربي أو رمز خاص أو سطر جديد بنيةَ الكود — حل لمشكلة "Invalid or unexpected token".
   const b64 = utf8ToBase64(JSON.stringify(slim));
+  // تُقسَّم على أسطر قصيرة (180 حرف) حتى لا يتأثر اللصق بسطر واحد عملاق.
+  const b64Lines: string[] = [];
+  for (let i = 0; i < b64.length; i += 180) b64Lines.push(b64.slice(i, i + 180));
+  const b64Array = b64Lines.map((c) => `"${c}"`).join(",\n");
   const script = `// أنشأ هذا الملف تلقائياً من تطبيق "استنساخ"
 // خطوات التشغيل في script.google.com:
 // 1) الصق هذا الكود كاملاً (امسح أي كود قديم مثل myFunction)
 // 2) اختر الدالة buildForm من القائمة المنسدلة فوق زر التشغيل ثم اضغط "تشغيل"
 // 3) أول مرة سيطلب إذن الوصول — اضغط "مراجعة الأذونات" واسمح لحسابك
 // 4) بعد التشغيل افتح سجل التنفيذ (Execution log) وستجد رابطي التحرير والتعبئة
+// بيانات النموذج: base64 مقسمة على أسطر قصيرة (حروف وأرقام فقط — لا تكسر الكود)
+var DATA_B64 = [
+${b64Array}
+].join("");
 function myFunction() {
   buildForm();
 }
 function buildForm() {
-  const data = JSON.parse(
-    Utilities.newBlob(Utilities.base64Decode("${b64}")).getDataAsString("UTF-8"),
+  var data = JSON.parse(
+    Utilities.newBlob(Utilities.base64Decode(DATA_B64)).getDataAsString("UTF-8")
   );
-  const gf = FormApp.create(data.title || "نموذج");
+  var gf = FormApp.create(data.title || "نموذج");
   if (data.description) gf.setDescription(data.description);
 
-  let created = 0;
-  let skipped = 0;
-  for (const q of data.questions) {
+  var created = 0;
+  var skipped = 0;
+  for (var qi = 0; qi < data.questions.length; qi++) {
+    var q = data.questions[qi];
     try {
-      const title = (q.title || "").trim() || q.description || "سؤال بدون عنوان";
-      const opts = (q.options || []).filter((o) => o && String(o).trim() !== "");
-      let item = null;
+      var title = (q.title || "").trim() || q.description || "سؤال بدون عنوان";
+      var opts = (q.options || []).filter(function (o) { return o && String(o).trim() !== ""; });
+      var item = null;
       switch (q.type) {
         case "short":
           item = gf.addTextItem(); break;
@@ -134,8 +143,8 @@ function buildForm() {
             : gf.addListItem().setChoiceValues(["خيار 1", "خيار 2"]);
           break;
         case "scale": {
-          const labels = opts.length >= 2 ? opts : null;
-          const sc = gf.addScaleItem().setBounds(1, Math.max(2, opts.length || 5));
+          var labels = opts.length >= 2 ? opts : null;
+          var sc = gf.addScaleItem().setBounds(1, Math.max(2, opts.length || 5));
           if (labels) sc.setLabels(labels[0], labels[labels.length - 1]);
           item = sc;
           break;
@@ -145,11 +154,12 @@ function buildForm() {
         case "time":
           item = gf.addTimeItem(); break;
         case "rating": {
-          item = gf.addScaleItem().setBounds(1, Math.max(2, q.max || 5));
+          var sc2 = gf.addScaleItem().setBounds(1, Math.max(2, q.max || 5));
+          item = sc2;
           break;
         }
         case "section": {
-          const pb = gf.addPageBreakItem();
+          var pb = gf.addPageBreakItem();
           pb.setTitle(title);
           item = pb;
           break;
@@ -172,7 +182,7 @@ function buildForm() {
       }
       item.setTitle(title);
       if (q.description && typeof item.setHelpText === "function") {
-        const prev = typeof item.getHelpText === "function" ? item.getHelpText() : "";
+        var prev = typeof item.getHelpText === "function" ? item.getHelpText() : "";
         item.setHelpText(prev ? prev + "\\n" + q.description : q.description);
       }
       if (q.type !== "section" && item.setRequired) item.setRequired(!!q.required);
