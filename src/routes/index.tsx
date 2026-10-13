@@ -12,7 +12,7 @@ import { useFormsStore } from "@/hooks/use-forms-store";
 import { TEMPLATES, templateToForm } from "@/lib/form-templates";
 import type { Answer, FormDoc, Question, Store, FormResponse } from "@/lib/form-types";
 import { newQuestion, uid } from "@/lib/form-types";
-import { THEME_KEY, encodeForm, exportFormJson, parseFormJson } from "@/lib/form-storage";
+import { THEME_KEY, encodeForm, exportAppsScript, exportFormJson, parseFormJson } from "@/lib/form-storage";
 
 export const Route = createFileRoute("/")({
   component: HomePage,
@@ -283,6 +283,10 @@ function HomePage() {
                     onMove={moveQuestion}
                     onReorder={(questions) => updateActive({ questions })}
                     onExport={() => exportFormJson(active)}
+                    onExportGoogle={() => {
+                      exportAppsScript(active);
+                      toast.success("تم تنزيل سكربت Google Forms — الصقه في script.google.com وشغّله");
+                    }}
                     onShare={shareActive}
                   />
                 )}
