@@ -173,7 +173,7 @@ function buildForm() {
       item.setTitle(title);
       if (q.description && typeof item.setHelpText === "function") {
         const prev = typeof item.getHelpText === "function" ? item.getHelpText() : "";
-        item.setHelpText(prev ? prev + "\n" + q.description : q.description);
+        item.setHelpText(prev ? prev + "\\n" + q.description : q.description);
       }
       if (q.type !== "section" && item.setRequired) item.setRequired(!!q.required);
       created++;
