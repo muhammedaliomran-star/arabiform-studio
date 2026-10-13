@@ -63,6 +63,17 @@ export function parseFormJson(text: string): FormDoc {
 
 /* ---------- Google Forms export (Apps Script generator) ---------- */
 
+/** Encode UTF-8 bytes as base64 (chunked to avoid call-stack limits). */
+function utf8ToBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+
 export function exportAppsScript(form: FormDoc) {
   const slim = {
     title: form.title,
@@ -76,10 +87,9 @@ export function exportAppsScript(form: FormDoc) {
       max: q.max,
     })),
   };
-  const json = JSON.stringify(slim)
-    .replace(/\\/g, "\\\\")
-    .replace(/`/g, "\\`")
-    .replace(/\$\{/g, "\\${");
+  // البيانات تُضمَّن مشفَّرة بـ base64 (حروف وأرقام فقط) حتى لا يكسر أي محرف
+  // عربي أو رمز خاص أو سطر جديد بنيةَ الكود — حل لمشكلة "Invalid or unexpected token".
+  const b64 = utf8ToBase64(JSON.stringify(slim));
   const script = `// أنشأ هذا الملف تلقائياً من تطبيق "استنساخ"
 // خطوات التشغيل في script.google.com:
 // 1) الصق هذا الكود كاملاً (امسح أي كود قديم مثل myFunction)
@@ -90,7 +100,9 @@ function myFunction() {
   buildForm();
 }
 function buildForm() {
-  const data = JSON.parse(\`${json}\`);
+  const data = JSON.parse(
+    Utilities.newBlob(Utilities.base64Decode("${b64}")).getDataAsString("UTF-8"),
+  );
   const gf = FormApp.create(data.title || "نموذج");
   if (data.description) gf.setDescription(data.description);
 
