@@ -93,6 +93,7 @@ function HomePage() {
         sourceUrl: data.sourceUrl,
         headerImage: (data as any).headerImage,
         isQuiz: (data as any).isQuiz,
+        theme: (data as any).theme,
         questions: data.questions.map((q: any) => ({ ...q, id: uid() })) as Question[],
         updatedAt: Date.now(),
       });
@@ -298,9 +299,14 @@ function HomePage() {
                     onExport={() => exportFormJson(active)}
                     onExportGoogle={() => {
                       exportAppsScript(active);
-                      toast.success("تم تنزيل السكربت — الصقه في script.google.com، اختر buildForm ثم اضغط تشغيل", {
-                        duration: 8000,
-                      });
+                      toast.success(
+                        active.theme
+                          ? "تم تنزيل السكربت — شغّله في script.google.com، وانسخ الألوان من بطاقة الهوية وطبّقها من 🎨 في جوجل"
+                          : "تم تنزيل السكربت — الصقه في script.google.com، اختر buildForm ثم اضغط تشغيل",
+                        {
+                          duration: 9000,
+                        },
+                      );
                     }}
                     onShare={shareActive}
                   />

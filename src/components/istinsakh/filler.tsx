@@ -72,19 +72,43 @@ export function Filler({
   };
 
   const isLast = nextPageIndex() === -1;
+  const theme = form.theme;
+  const fontStack = theme?.font
+    ? `"${theme.font}", "Tajawal", "Cairo", sans-serif`
+    : undefined;
 
   return (
-    <div className="space-y-4">
-      <div className="surface-card overflow-hidden p-5 md:p-6">
+    <div
+      className={`space-y-4 ${theme ? "rounded-3xl p-3 md:p-4" : ""}`}
+      style={{
+        ...(theme ? { backgroundColor: theme.background } : null),
+        ...(fontStack ? { fontFamily: fontStack } : null),
+      }}
+    >
+      <div
+        className="surface-card overflow-hidden p-5 md:p-6"
+        style={
+          theme
+            ? { backgroundColor: theme.accent, borderColor: theme.dark, color: "#fff" }
+            : undefined
+        }
+      >
         {form.headerImage && (
           <img
             src={driveImageUrl(form.headerImage)}
             alt="صورة النموذج"
-            className="mb-4 max-h-56 w-full rounded-xl border border-border object-cover"
+            className="mb-4 max-h-56 w-full rounded-xl border border-white/30 object-cover"
           />
         )}
         <h2 className="text-2xl font-extrabold tracking-tight md:text-3xl">{form.title}</h2>
-        {form.description && <p className="mt-2 text-sm text-muted-foreground">{form.description}</p>}
+        {form.description && (
+          <p
+            className="mt-2 text-sm text-muted-foreground"
+            style={theme ? { color: "rgba(255,255,255,.88)" } : undefined}
+          >
+            {form.description}
+          </p>
+        )}
         {pages.length > 1 && (
           <div className="mt-4">
             <div className="flex items-center justify-between text-xs font-semibold text-muted-foreground">
@@ -103,8 +127,21 @@ export function Filler({
         )}
       </div>
 
-      {current.section?.description && (
-        <p className="px-1 text-sm text-muted-foreground">{current.section.description}</p>
+      {current.section && (
+        <div
+          className="surface-card overflow-hidden"
+          style={theme ? { borderColor: theme.dark } : undefined}
+        >
+          <div
+            className={`${theme ? "" : "bg-accent/60"} px-5 py-4`}
+            style={theme ? { backgroundColor: theme.accent, color: "#fff" } : undefined}
+          >
+            <h3 className="text-lg font-extrabold tracking-tight">{current.section.title}</h3>
+          </div>
+          {current.section.description && (
+            <p className="px-5 py-3 text-xs text-muted-foreground">{current.section.description}</p>
+          )}
+        </div>
       )}
 
       {current.items.map((q, i) => (

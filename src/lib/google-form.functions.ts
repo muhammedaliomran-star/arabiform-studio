@@ -83,6 +83,45 @@ export const fetchGoogleForm = createServerFn({ method: "POST" })
     const isDriveId = (v: unknown) =>
       typeof v === "string" && /^[A-Za-z0-9_-]{25,}$/.test(v) && /[A-Za-z_-]/.test(v);
 
+    // ---------- هوية النموذج (اللون + الخط) ----------
+    const toHex = (r: number, g: number, b: number) =>
+      "#" +
+      [r, g, b]
+        .map((n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0"))
+        .join("")
+        .toUpperCase();
+    const mix = (rgb: [number, number, number], target: [number, number, number], t: number) =>
+      toHex(
+        rgb[0] + (target[0] - rgb[0]) * t,
+        rgb[1] + (target[1] - rgb[1]) * t,
+        rgb[2] + (target[2] - rgb[2]) * t,
+      );
+    let theme: { accent: string; background: string; dark: string; font: string } | undefined;
+    {
+      // اللون الأساسي من وسم theme-color الذي تضعه جوجل في كل نموذج ملوّن
+      const tm = html.match(/<meta\s+name="theme-color"\s+content="rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)"/i);
+      if (tm) {
+        const accent: [number, number, number] = [Number(tm[1]), Number(tm[2]), Number(tm[3])];
+        // الخط من روابط خطوط جوجل المحمّلة في الصفحة (Cairo للعربية غالباً)
+        const fm =
+          html.match(/fonts\.googleapis\.com\/css[^"']*?family=([A-Za-z+]+)/i) ??
+          html.match(/fonts\.gstatic\.com\/[^"']*?\/([a-z]+)\/v\d+\//i);
+        let font = "Cairo";
+        if (fm) {
+          const name = fm[1].replace(/\+/g, " ");
+          if (/^(Cairo|Tajawal|Roboto|Arial|Open Sans|Noto Kufi Arabic|Noto Naskh Arabic|Amiri|Aref Ruqaa)$/i.test(name)) {
+            font = name;
+          }
+        }
+        theme = {
+          accent: toHex(accent[0], accent[1], accent[2]),
+          background: mix(accent, [255, 255, 255], 0.92),
+          dark: mix(accent, [0, 0, 0], 0.16),
+          font,
+        };
+      }
+    }
+
     // صورة الترويسة: العنصر type=11 يحمل Drive ID في الخانة الخامسة
     let headerImage: string | undefined;
     const head = rawQuestions.find((item: any) => item?.[3] === 11);
@@ -146,6 +185,7 @@ export const fetchGoogleForm = createServerFn({ method: "POST" })
       formId: parsed[0],
       headerImage,
       isQuiz: hasPoints,
+      theme,
     };
 
   });

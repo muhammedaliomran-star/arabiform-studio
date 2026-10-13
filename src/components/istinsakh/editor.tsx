@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   DndContext,
   closestCenter,
@@ -14,9 +15,9 @@ import {
   verticalListSortingStrategy,
   arrayMove,
 } from "@dnd-kit/sortable";
-import { Download, Share2, Layers, Plus, FileUp, GraduationCap, X } from "lucide-react";
+import { Download, Share2, Layers, Plus, FileUp, GraduationCap, X, Palette, Copy, Check } from "lucide-react";
 import type { FormDoc, Question } from "@/lib/form-types";
-import { driveImageUrl } from "@/lib/form-types";
+import { driveImageUrl, shadeHex } from "@/lib/form-types";
 import { QuestionEditor } from "./question-editor";
 
 const focusRing =
@@ -56,6 +57,18 @@ export function Editor({
   );
 
   const sections = form.questions.filter((q) => q.type === "section");
+  const theme = form.theme;
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const copyHex = async (hex: string) => {
+    try {
+      await navigator.clipboard.writeText(hex);
+      setCopied(hex);
+      setTimeout(() => setCopied(null), 1500);
+    } catch {
+      prompt("انسخ الكود:", hex);
+    }
+  };
 
   const onDragEnd = (e: DragEndEvent) => {
     const { active, over } = e;
@@ -101,6 +114,100 @@ export function Editor({
             >
               <X className="h-3.5 w-3.5" aria-hidden />
             </button>
+          </div>
+        )}
+        {theme && (
+          <div className="mt-3 rounded-2xl border border-border bg-surface p-4">
+            <div className="flex items-center gap-2">
+              <Palette className="h-4 w-4 text-muted-foreground" aria-hidden />
+              <p className="text-xs font-extrabold">هوية النموذج الأصلي</p>
+              <button
+                onClick={() => onUpdate({ theme: undefined })}
+                className={`ms-auto rounded px-2 py-1 text-[11px] text-muted-foreground hover:text-destructive ${focusRing}`}
+              >
+                إزالة
+              </button>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-4">
+              <label className="flex items-center gap-2 text-[11px] font-semibold text-muted-foreground">
+                <span
+                  className="h-7 w-7 rounded-lg border border-border"
+                  style={{ backgroundColor: theme.accent }}
+                  aria-hidden
+                />
+                <input
+                  type="color"
+                  value={theme.accent}
+                  aria-label="اللون الأساسي"
+                  onChange={(e) =>
+                    onUpdate({
+                      theme: { ...theme, accent: e.target.value.toUpperCase(), dark: shadeHex(e.target.value, -16) },
+                    })
+                  }
+                  className="h-7 w-10 cursor-pointer rounded border border-border bg-transparent p-0.5"
+                />
+                <button
+                  onClick={() => copyHex(theme.accent)}
+                  className={`flex items-center gap-1 rounded-md px-1.5 py-1 font-mono tabular hover:bg-secondary ${focusRing}`}
+                  title="نسخ الكود"
+                  dir="ltr"
+                >
+                  {copied === theme.accent ? (
+                    <Check className="h-3 w-3 text-primary" aria-hidden />
+                  ) : (
+                    <Copy className="h-3 w-3" aria-hidden />
+                  )}
+                  {theme.accent}
+                </button>
+              </label>
+              <label className="flex items-center gap-2 text-[11px] font-semibold text-muted-foreground">
+                <span
+                  className="h-7 w-7 rounded-lg border border-border"
+                  style={{ backgroundColor: theme.background }}
+                  aria-hidden
+                />
+                <input
+                  type="color"
+                  value={theme.background}
+                  aria-label="لون الخلفية"
+                  onChange={(e) =>
+                    onUpdate({ theme: { ...theme, background: e.target.value.toUpperCase() } })
+                  }
+                  className="h-7 w-10 cursor-pointer rounded border border-border bg-transparent p-0.5"
+                />
+                <button
+                  onClick={() => copyHex(theme.background)}
+                  className={`flex items-center gap-1 rounded-md px-1.5 py-1 font-mono tabular hover:bg-secondary ${focusRing}`}
+                  title="نسخ الكود"
+                  dir="ltr"
+                >
+                  {copied === theme.background ? (
+                    <Check className="h-3 w-3 text-primary" aria-hidden />
+                  ) : (
+                    <Copy className="h-3 w-3" aria-hidden />
+                  )}
+                  {theme.background}
+                </button>
+              </label>
+              <label className="flex items-center gap-2 text-[11px] font-semibold text-muted-foreground">
+                الخط
+                <select
+                  value={theme.font}
+                  onChange={(e) => onUpdate({ theme: { ...theme, font: e.target.value } })}
+                  className={`rounded-lg border border-input bg-surface px-2 py-1.5 outline-none ${focusRing}`}
+                >
+                  {["Cairo", "Tajawal", "Roboto", "Arial", "Noto Kufi Arabic", "Amiri"].map((f) => (
+                    <option key={f} value={f}>
+                      {f}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+              تُطبَّق الهوية تلقائياً على المعاينة ورابط المشاركة. وفي Google Forms (لا يقبل الألوان
+              برمجياً): افتح النموذج ← أيقونة الألوان 🎨 ← لون مخصص والصق الكود.
+            </p>
           </div>
         )}
         <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">

@@ -52,6 +52,7 @@ export function parseFormJson(text: string): FormDoc {
     sourceUrl: raw.sourceUrl,
     isQuiz: raw.isQuiz,
     headerImage: raw.headerImage,
+    theme: raw.theme,
     updatedAt: Date.now(),
     questions: raw.questions.map((q) => ({
       ...q,
@@ -83,6 +84,7 @@ export function exportAppsScript(form: FormDoc) {
     description: form.description,
     isQuiz: !!form.isQuiz,
     headerImage: form.headerImage || "",
+    theme: form.theme || null,
     questions: form.questions.map((q) => ({
       title: q.title,
       description: q.description,
@@ -348,6 +350,10 @@ function buildForm() {
   Logger.log("تم إنشاء " + created + " سؤال" + (skipped ? " (تُخطّي " + skipped + ")" : ""));
   Logger.log("رابط التحرير: " + gf.getEditUrl());
   Logger.log("رابط التعبئة: " + gf.getPublishedUrl());
+  if (data.theme && data.theme.accent) {
+    Logger.log("هوية النموذج الأصلي — اللون الأساسي: " + data.theme.accent + " | الخلفية: " + data.theme.background + " | الخط: " + data.theme.font);
+    Logger.log("لطبّقها: افتح النموذج ← أيقونة الألوان 🎨 ← لون مخصص والصق الكود ← الخط من قائمة الخطوط");
+  }
 }
 `;
   download(`${safeName(form.title)}-google-forms.gs`, script, "text/plain;charset=utf-8");
@@ -411,6 +417,7 @@ export function encodeForm(form: FormDoc) {
     d: form.description,
     z: !!form.isQuiz,
     h: form.headerImage || "",
+    th: form.theme,
     q: form.questions.map((q) => ({ ...q, image: undefined })),
   };
   return toBase64Url(new TextEncoder().encode(JSON.stringify(slim)));
@@ -422,6 +429,7 @@ export function decodeForm(code: string): FormDoc {
     d: string;
     z?: boolean;
     h?: string;
+    th?: FormDoc["theme"];
     q: FormDoc["questions"];
   };
   return {
@@ -430,6 +438,7 @@ export function decodeForm(code: string): FormDoc {
     description: slim.d ?? "",
     isQuiz: slim.z,
     headerImage: slim.h || undefined,
+    theme: slim.th,
     questions: slim.q ?? [],
     updatedAt: Date.now(),
   };

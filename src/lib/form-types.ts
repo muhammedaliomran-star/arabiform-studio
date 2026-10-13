@@ -44,6 +44,18 @@ export type Question = {
   validation?: TextValidation;
 };
 
+/** هوية النموذج البصرية المستنسخة من نموذج جوجل الأصلي */
+export type FormTheme = {
+  /** اللون الأساسي (HEX مثل #CE9492) */
+  accent: string;
+  /** لون الخلفية الفاتح المشتق */
+  background: string;
+  /** درجة غامقة للحدود والنصوص */
+  dark: string;
+  /** اسم الخط (Cairo افتراضياً للعربية) */
+  font: string;
+};
+
 export type FormDoc = {
   id: string;
   title: string;
@@ -55,6 +67,8 @@ export type FormDoc = {
   isQuiz?: boolean;
   /** Google Drive image ID used as the form header/banner */
   headerImage?: string;
+  /** visual identity cloned from the source Google Form */
+  theme?: FormTheme;
 };
 
 export type Answer = string | string[];
@@ -100,6 +114,20 @@ export function driveImageUrl(id: string): string {
 /** Public view page URL for a Google Drive file (fallback when the direct image is blocked). */
 export function driveFileUrl(id: string): string {
   return `https://drive.google.com/file/d/${id}/view`;
+}
+
+/** Darken/lighten a #RRGGBB hex color by percent (-100..100). */
+export function shadeHex(hex: string, percent: number): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const t = percent < 0 ? 0 : 255;
+  const p = Math.abs(percent) / 100;
+  const c = (v: number) => Math.round(v + (t - v) * p);
+  const r = c(n >> 16);
+  const g = c((n >> 8) & 255);
+  const b = c(n & 255);
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0").toUpperCase()}`;
 }
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
