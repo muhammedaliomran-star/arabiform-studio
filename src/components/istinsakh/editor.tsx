@@ -17,7 +17,7 @@ import {
 } from "@dnd-kit/sortable";
 import { Download, Share2, Layers, Plus, FileUp, GraduationCap, X, Palette, Copy, Check } from "lucide-react";
 import type { FormDoc, Question } from "@/lib/form-types";
-import { driveImageUrl, shadeHex } from "@/lib/form-types";
+import { driveImageUrl, isAnswerable, shadeHex } from "@/lib/form-types";
 import { QuestionEditor } from "./question-editor";
 
 const focusRing =
@@ -222,7 +222,20 @@ export function Editor({
             <input
               type="checkbox"
               checked={!!form.isQuiz}
-              onChange={(e) => onUpdate({ isQuiz: e.target.checked })}
+              onChange={(e) => {
+                const next = e.target.checked;
+                if (next) {
+                  // عند التفعيل: أي سؤال قابل للدرجات وليس له درجة يأخذ 1 تلقائياً
+                  onUpdate({
+                    isQuiz: true,
+                    questions: form.questions.map((q) =>
+                      isAnswerable(q) && !q.points ? { ...q, points: 1 } : q,
+                    ),
+                  });
+                } else {
+                  onUpdate({ isQuiz: false });
+                }
+              }}
               className="accent-primary"
             />
             <GraduationCap className="h-3.5 w-3.5" aria-hidden /> وضع اختبار
