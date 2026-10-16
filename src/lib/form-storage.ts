@@ -117,8 +117,8 @@ export function exportAppsScript(form: FormDoc) {
 // 1) الصق هذا الكود كاملاً (امسح أي كود قديم مثل myFunction)
 // 2) اختر الدالة buildForm من القائمة المنسدلة فوق زر التشغيل ثم اضغط "تشغيل"
 // 3) أول مرة سيطلب إذن الوصول — اضغط "مراجعة الأذونات" واسمح لحسابك
-//    (إن كان النموذج فيه صور سيطلب إذن Drive أيضاً — اسمح به)
-// 4) بعد التشغيل افتح سجل التنفيذ (Execution log) وستجد رابطي التحرير والتعبئة
+// 4) الصور تُجلب تلقائياً من روابطها العامة (لا نسخ يدوي) — النتيجة في سطر "الصور المرفقة"
+// 5) بعد التشغيل افتح سجل التنفيذ (Execution log) وستجد رابطي التحرير والتعبئة
 // بيانات النموذج: base64 مقسمة على أسطر قصيرة (حروف وأرقام فقط — لا تكسر الكود)
 var DATA_B64 = [
 ${b64Array}
@@ -138,13 +138,42 @@ function buildForm() {
   var skipped = 0;
   var noKey = 0;
 
-  // قراءة صورة من Drive ID (تتطلب إذن Drive عند التشغيل)
+  // قراءة صورة من Drive ID بثلاث محاولات متدرجة (بدون نسخ يدوي):
+  // 1) الرابط العام المباشر — يعمل متى كانت الصورة ظاهرة في النموذج الأصلي
+  // 2) نفس الرابط بتوكن المستخدم — للصور المشاركة معه دون العموم
+  // 3) DriveApp كاحتياط أخير (يُبقي إذن Drive مطلوباً لهذه الحالة فقط)
+  var imgOk = 0;
+  var imgFail = 0;
   function imageBlob(src) {
+    var u = "https://lh3.googleusercontent.com/d/" + src;
     try {
-      if (typeof DriveApp !== "undefined") return DriveApp.getFileById(src).getBlob();
-    } catch (e) {
+      var r1 = UrlFetchApp.fetch(u, { muteHttpExceptions: true });
+      if (r1.getResponseCode() === 200) {
+        var b1 = r1.getBlob();
+        if (b1.getBytes().length > 1000) { imgOk++; return b1; }
+      }
+    } catch (e1) {}
+    try {
+      var tok = ScriptApp.getOAuthToken();
+      var r2 = UrlFetchApp.fetch(u, {
+        headers: { Authorization: "Bearer " + tok },
+        muteHttpExceptions: true,
+      });
+      if (r2.getResponseCode() === 200) {
+        var b2 = r2.getBlob();
+        if (b2.getBytes().length > 1000) { imgOk++; return b2; }
+      }
+    } catch (e2) {}
+    try {
+      if (typeof DriveApp !== "undefined") {
+        var b3 = DriveApp.getFileById(src).getBlob();
+        imgOk++;
+        return b3;
+      }
+    } catch (e3) {
       Logger.log("تعذر قراءة صورة Drive: " + src);
     }
+    imgFail++;
     return null;
   }
 
@@ -377,6 +406,7 @@ function buildForm() {
   }
 
   Logger.log("تم إنشاء " + created + " سؤال" + (skipped ? " (تُخطّي " + skipped + ")" : "") + (noKey ? " — تنبيه: " + noKey + " سؤال بلا مفتاح إجابة" : ""));
+  Logger.log("الصور المرفقة تلقائياً: " + imgOk + (imgFail ? " (تعذر " + imgFail + " — انسخها يدوياً من محرر Google Forms)" : ""));
   Logger.log("رابط التحرير: " + gf.getEditUrl());
   Logger.log("رابط التعبئة: " + gf.getPublishedUrl());
   if (data.theme && data.theme.accent) {
