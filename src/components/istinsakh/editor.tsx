@@ -17,7 +17,7 @@ import {
   verticalListSortingStrategy,
   arrayMove,
 } from "@dnd-kit/sortable";
-import { Download, Share2, Layers, Plus, FileUp, GraduationCap, X, Palette, Copy, Check, Images, ExternalLink } from "lucide-react";
+import { Download, Share2, Layers, Plus, FileUp, GraduationCap, X, Palette, Copy, Check, Images, ExternalLink, ImageOff } from "lucide-react";
 import type { FormDoc, Question } from "@/lib/form-types";
 import { driveImageUrl, isAnswerable, shadeHex, applyScoreKeys, buildPrefillUrl } from "@/lib/form-types";
 import { MAX_BATCH_FILES, MAX_RAW_FILE_BYTES, compressImageFile } from "@/lib/image-compress";
@@ -64,6 +64,18 @@ export function Editor({
   const sections = form.questions.filter((q) => q.type === "section");
   const theme = form.theme;
   const prefillUrl = buildPrefillUrl(form);
+  const imageCount =
+    (form.headerImage ? 1 : 0) +
+    form.questions.reduce((n, q) => n + (q.images ?? []).length + (q.image ? 1 : 0), 0);
+
+  const stripImages = () => {
+    if (!imageCount) return;
+    if (!confirm(`إزالة ${imageCount} صورة نهائياً من النموذج؟ (يمكن التراجع بـ Ctrl+Z)`)) return;
+    onUpdate({
+      headerImage: undefined,
+      questions: form.questions.map((q) => ({ ...q, image: undefined, images: [] })),
+    });
+  };
   const [copied, setCopied] = useState<string | null>(null);
   const fetchScore = useServerFn(fetchGoogleScore);
   const [scoreUrl, setScoreUrl] = useState("");
@@ -368,6 +380,15 @@ export function Editor({
           <button onClick={onShare} className={toolBtn}>
             <Share2 className="h-3.5 w-3.5" aria-hidden /> نسخ رابط المشاركة
           </button>
+          {imageCount > 0 && (
+            <button
+              onClick={stripImages}
+              className={toolBtn}
+              title={`إزالة كل الصور (${imageCount}) نهائياً من النموذج — يمكن التراجع`}
+            >
+              <ImageOff className="h-3.5 w-3.5" aria-hidden /> إزالة الصور ({imageCount})
+            </button>
+          )}
         </div>
         <div className="mt-3 rounded-2xl border border-border bg-surface p-4">
           <p className="text-xs font-extrabold">مفاتيح الإجابة من رابط النتيجة</p>
