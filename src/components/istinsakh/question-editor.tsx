@@ -190,8 +190,14 @@ export function QuestionEditor({
                 aria-label={`الخيار ${i + 1}`}
                 onChange={(e) => {
                   const next = [...q.options];
+                  const old = next[i];
                   next[i] = e.target.value;
-                  onChange({ options: next });
+                  const patch: Partial<Question> = { options: next };
+                  // مزامنة مفتاح الإجابة مع النص الجديد حتى لا ييتم
+                  if ((q.correct ?? []).includes(old)) {
+                    patch.correct = (q.correct ?? []).map((c) => (c === old ? e.target.value : c));
+                  }
+                  onChange(patch);
                 }}
                 className={`min-w-0 flex-1 rounded-lg border border-input bg-surface px-3 py-2 text-sm outline-none focus:border-ring ${focusRing}`}
               />

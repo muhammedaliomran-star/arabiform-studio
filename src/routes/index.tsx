@@ -299,14 +299,28 @@ function HomePage() {
                     onExport={() => exportFormJson(active)}
                     onExportGoogle={() => {
                       exportAppsScript(active);
-                      toast.success(
-                        active.theme
-                          ? "تم تنزيل السكربت — شغّله في script.google.com، وانسخ الألوان من بطاقة الهوية وطبّقها من 🎨 في جوجل"
-                          : "تم تنزيل السكربت — الصقه في script.google.com، اختر buildForm ثم اضغط تشغيل",
-                        {
-                          duration: 9000,
-                        },
-                      );
+                      const keyless = active.isQuiz
+                        ? active.questions.filter(
+                            (q) =>
+                              (q.type === "radio" || q.type === "checkbox" || q.type === "dropdown") &&
+                              !(q.correct ?? []).length,
+                          ).length
+                        : 0;
+                      if (keyless > 0) {
+                        toast.warning(
+                          `تم التنزيل لكن ${keyless} سؤال بلا مفتاح إجابة — لن تُصحح تلقائياً. علّم ✓ أو اجلب المفاتيح من رابط النتيجة ثم صدّر من جديد.`,
+                          { duration: 10000 },
+                        );
+                      } else {
+                        toast.success(
+                          active.theme
+                            ? "تم تنزيل السكربت — شغّله في script.google.com، وانسخ الألوان من بطاقة الهوية وطبّقها من 🎨 في جوجل"
+                            : "تم تنزيل السكربت — الصقه في script.google.com، اختر buildForm ثم اضغط تشغيل",
+                          {
+                            duration: 9000,
+                          },
+                        );
+                      }
                     }}
                     onShare={shareActive}
                   />

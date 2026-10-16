@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { useServerFn } from "@tanstack/react-start";
+import { fetchGoogleScore } from "@/lib/google-score.functions";
 import {
   DndContext,
   closestCenter,
@@ -17,7 +19,7 @@ import {
 } from "@dnd-kit/sortable";
 import { Download, Share2, Layers, Plus, FileUp, GraduationCap, X, Palette, Copy, Check } from "lucide-react";
 import type { FormDoc, Question } from "@/lib/form-types";
-import { driveImageUrl, isAnswerable, shadeHex } from "@/lib/form-types";
+import { driveImageUrl, isAnswerable, shadeHex, applyScoreKeys } from "@/lib/form-types";
 import { QuestionEditor } from "./question-editor";
 
 const focusRing =
@@ -59,6 +61,38 @@ export function Editor({
   const sections = form.questions.filter((q) => q.type === "section");
   const theme = form.theme;
   const [copied, setCopied] = useState<string | null>(null);
+  const fetchScore = useServerFn(fetchGoogleScore);
+  const [scoreUrl, setScoreUrl] = useState("");
+  const [scoreLoading, setScoreLoading] = useState(false);
+  const [scoreMsg, setScoreMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const handleScoreImport = async () => {
+    if (!scoreUrl.trim() || scoreLoading) return;
+    setScoreLoading(true);
+    setScoreMsg(null);
+    try {
+      const { items } = await fetchScore({ data: { url: scoreUrl } });
+      const r = applyScoreKeys(form.questions, items);
+      if (r.foreign) {
+        setScoreMsg({ ok: false, text: "هذا الرابط لنموذج مختلف — لم يتغير شيء. تأكد أن رابط النتيجة لنفس النموذج." });
+        return;
+      }
+      onUpdate({ isQuiz: true, questions: r.questions });
+      setScoreUrl("");
+      setScoreMsg({
+        ok: true,
+        text:
+          `تم تعليم ${r.matched} مفتاح إجابة تلقائياً وتفعيل وضع الاختبار` +
+          (r.unmatched.length
+            ? ` — تعذّر ${r.unmatched.length}: ${r.unmatched.slice(0, 3).join("، ")}${r.unmatched.length > 3 ? "…" : ""}`
+            : ""),
+      });
+    } catch (e) {
+      setScoreMsg({ ok: false, text: e instanceof Error ? e.message : "تعذر جلب المفاتيح." });
+    } finally {
+      setScoreLoading(false);
+    }
+  };
 
   const copyHex = async (hex: string) => {
     try {
@@ -249,6 +283,38 @@ export function Editor({
           <button onClick={onShare} className={toolBtn}>
             <Share2 className="h-3.5 w-3.5" aria-hidden /> نسخ رابط المشاركة
           </button>
+        </div>
+        <div className="mt-3 rounded-2xl border border-border bg-surface p-4">
+          <p className="text-xs font-extrabold">مفاتيح الإجابة من رابط النتيجة</p>
+          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+            أجب محاولة واحدة (ولو غلط) ثم الصق رابط «عرض النتيجة» — سنعلّم ✓ والدرجات تلقائياً.
+          </p>
+          <div className="mt-2 flex flex-col gap-2 md:flex-row">
+            <input
+              value={scoreUrl}
+              onChange={(e) => setScoreUrl(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleScoreImport()}
+              placeholder="https://docs.google.com/forms/d/e/.../viewscore?..."
+              dir="ltr"
+              aria-label="رابط عرض النتيجة"
+              className={`min-w-0 flex-1 rounded-xl border border-input bg-surface px-4 py-2.5 text-xs outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/30 ${focusRing}`}
+            />
+            <button
+              onClick={handleScoreImport}
+              disabled={scoreLoading}
+              className={`rounded-xl bg-primary px-5 py-2.5 text-xs font-bold text-primary-foreground transition hover:opacity-90 disabled:opacity-50 ${focusRing}`}
+            >
+              {scoreLoading ? "جارٍ الجلب..." : "جلب المفاتيح"}
+            </button>
+          </div>
+          {scoreMsg && (
+            <p
+              role={scoreMsg.ok ? "status" : "alert"}
+              className={`mt-2 text-[11px] font-semibold ${scoreMsg.ok ? "text-primary" : "text-destructive"}`}
+            >
+              {scoreMsg.text}
+            </p>
+          )}
         </div>
         {form.sourceUrl && (
           <p className="mt-3 truncate text-[11px] text-muted-foreground" dir="ltr">

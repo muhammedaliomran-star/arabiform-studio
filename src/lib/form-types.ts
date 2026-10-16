@@ -42,6 +42,8 @@ export type Question = {
   correct?: string[];
   /** text validation rule (short/paragraph) */
   validation?: TextValidation;
+  /** Google's internal item id (for matching score imports) */
+  gid?: string;
 };
 
 /** هوية النموذج البصرية المستنسخة من نموذج جوجل الأصلي */
@@ -128,6 +130,69 @@ export function shadeHex(hex: string, percent: number): string {
   const g = c((n >> 8) & 255);
   const b = c(n & 255);
   return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0").toUpperCase()}`;
+}
+
+/** Normalize Arabic answer text for comparison (diacritics/tatweel/whitespace). */
+export function normalizeAnswer(s: string): string {
+  return s
+    .replace(/[\u064B-\u0652\u0640]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export type ScoreKey = { gid: string; total: number; correct?: string };
+
+/**
+ * Apply imported score keys to questions: match by Google id first,
+ * fall back to document order for id-less (old) clones. Sets correct[] + points.
+ * Returns updated questions + report. `foreign` = score link is for another form.
+ */
+export function applyScoreKeys(
+  questions: Question[],
+  scores: ScoreKey[],
+): { questions: Question[]; matched: number; unmatched: string[]; foreign: boolean } {
+  const byGid = new Map(scores.map((s) => [s.gid, s]));
+  const answerable = questions.filter(isAnswerable);
+  const withGid = answerable.filter((q) => q.gid && byGid.has(q.gid));
+  const hasGids = answerable.some((q) => q.gid);
+  // رابط لنموذج مختلف: النموذج له معرفات لكنها لا تتقاطع مع النتيجة
+  if (hasGids && scores.length >= 3 && withGid.length * 2 < Math.min(scores.length, answerable.length)) {
+    return { questions, matched: 0, unmatched: [], foreign: true };
+  }
+
+  const gidSet = new Set(withGid.map((q) => q.gid as string));
+  const orderPool = scores.filter((s) => !gidSet.has(s.gid));
+  let orderIdx = 0;
+  let matched = 0;
+  const unmatched: string[] = [];
+  const withPoints = (q: Question, sk: ScoreKey): Question =>
+    sk.total > 0 ? { ...q, points: sk.total } : q;
+
+  const next = questions.map((q) => {
+    if (!isAnswerable(q)) return q;
+    let sk: ScoreKey | undefined;
+    if (q.gid && byGid.has(q.gid)) {
+      sk = byGid.get(q.gid);
+    } else {
+      // احتياطي الترتيب للنسخ القديمة بلا معرفات (نفس ترتيب النموذج)
+      sk = orderPool[orderIdx++];
+    }
+    if (!sk) return q;
+    const label = q.title.trim() || "سؤال بدون عنوان";
+    if (!sk.correct) {
+      unmatched.push(label);
+      return withPoints(q, sk);
+    }
+    const hit = q.options.find((o) => normalizeAnswer(o) === normalizeAnswer(sk.correct as string));
+    if (!hit) {
+      unmatched.push(label);
+      return withPoints(q, sk);
+    }
+    matched++;
+    return { ...withPoints(q, sk), correct: [hit] };
+  });
+
+  return { questions: next, matched, unmatched, foreign: false };
 }
 
 export const uid = () => Math.random().toString(36).slice(2, 10);

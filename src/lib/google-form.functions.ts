@@ -159,6 +159,7 @@ export const fetchGoogleForm = createServerFn({ method: "POST" })
         }
         return {
           id: String(item[0] ?? idx),
+          gid: item[0] != null ? String(item[0]) : undefined,
           title: trim(item[1]),
           description: trim(item[2]),
           type: typeMap[t] ?? "unknown",

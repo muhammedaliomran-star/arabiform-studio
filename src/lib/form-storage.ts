@@ -136,6 +136,7 @@ function buildForm() {
 
   var created = 0;
   var skipped = 0;
+  var noKey = 0;
 
   // قراءة صورة من Drive ID (تتطلب إذن Drive عند التشغيل)
   function imageBlob(src) {
@@ -207,7 +208,7 @@ function buildForm() {
               for (var ci = 0; ci < opts.length; ci++) {
                 var isC = false;
                 for (var cj = 0; cj < q.correct.length; cj++) {
-                  if (q.correct[cj] === opts[ci]) { isC = true; break; }
+                  if (String(q.correct[cj]).trim() === String(opts[ci]).trim()) { isC = true; break; }
                 }
                 rChoices.push(rItem.createChoice(opts[ci], isC));
               }
@@ -223,6 +224,7 @@ function buildForm() {
           }
           if (data.isQuiz && q.points > 0 && rItem.setPoints) rItem.setPoints(q.points);
           item = rItem;
+          if (rQuiz) Logger.log("مفتاح الإجابة [" + title + "]: " + q.correct.join("، "));
           break;
         }
         case "checkbox": {
@@ -234,7 +236,7 @@ function buildForm() {
               for (var ki = 0; ki < opts.length; ki++) {
                 var isCk = false;
                 for (var kj = 0; kj < q.correct.length; kj++) {
-                  if (q.correct[kj] === opts[ki]) { isCk = true; break; }
+                  if (String(q.correct[kj]).trim() === String(opts[ki]).trim()) { isCk = true; break; }
                 }
                 cChoices.push(cItem.createChoice(opts[ki], isCk));
               }
@@ -250,13 +252,36 @@ function buildForm() {
           }
           if (data.isQuiz && q.points > 0 && cItem.setPoints) cItem.setPoints(q.points);
           item = cItem;
+          if (cQuiz) Logger.log("مفتاح الإجابة [" + title + "]: " + q.correct.join("، "));
           break;
         }
-        case "dropdown":
-          item = opts.length
-            ? gf.addListItem().setChoiceValues(opts)
-            : gf.addListItem().setChoiceValues(["خيار 1", "خيار 2"]);
+        case "dropdown": {
+          var lItem = gf.addListItem();
+          var lQuiz = false;
+          if (data.isQuiz && q.correct && q.correct.length && opts.length) {
+            try {
+              var lChoices = [];
+              for (var li = 0; li < opts.length; li++) {
+                var isL = false;
+                for (var lj = 0; lj < q.correct.length; lj++) {
+                  if (String(q.correct[lj]).trim() === String(opts[li]).trim()) { isL = true; break; }
+                }
+                lChoices.push(lItem.createChoice(opts[li], isL));
+              }
+              lItem.setChoices(lChoices);
+              lQuiz = true;
+            } catch (qe3) {
+              Logger.log("تعذر وضع الإجابة الصحيحة (قائمة منسدلة): " + title);
+            }
+          }
+          if (!lQuiz) {
+            if (opts.length) lItem.setChoiceValues(opts);
+            else lItem.setChoiceValues(["خيار 1", "خيار 2"]);
+          }
+          item = lItem;
+          if (lQuiz) Logger.log("مفتاح الإجابة [" + title + "]: " + q.correct.join("، "));
           break;
+        }
         case "scale": {
           var labels = opts.length >= 2 ? opts : null;
           var sc = gf.addScaleItem().setBounds(1, Math.max(2, opts.length || 5));
@@ -340,6 +365,10 @@ function buildForm() {
         item.setHelpText(imgNote);
       }
       if (q.type !== "section" && item.setRequired) item.setRequired(!!q.required);
+      if (data.isQuiz && (q.type === "radio" || q.type === "checkbox" || q.type === "dropdown") && (!q.correct || !q.correct.length)) {
+        noKey++;
+        Logger.log("بلا مفتاح إجابة: " + title);
+      }
       created++;
     } catch (err) {
       skipped++;
@@ -347,7 +376,7 @@ function buildForm() {
     }
   }
 
-  Logger.log("تم إنشاء " + created + " سؤال" + (skipped ? " (تُخطّي " + skipped + ")" : ""));
+  Logger.log("تم إنشاء " + created + " سؤال" + (skipped ? " (تُخطّي " + skipped + ")" : "") + (noKey ? " — تنبيه: " + noKey + " سؤال بلا مفتاح إجابة" : ""));
   Logger.log("رابط التحرير: " + gf.getEditUrl());
   Logger.log("رابط التعبئة: " + gf.getPublishedUrl());
   if (data.theme && data.theme.accent) {
