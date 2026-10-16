@@ -12,7 +12,7 @@ import { useFormsStore } from "@/hooks/use-forms-store";
 import { TEMPLATES, templateToForm } from "@/lib/form-templates";
 import type { Answer, FormDoc, Question, Store, FormResponse } from "@/lib/form-types";
 import { isAnswerable, newQuestion, uid } from "@/lib/form-types";
-import { THEME_KEY, encodeForm, exportAppsScript, exportFormJson, parseFormJson } from "@/lib/form-storage";
+import { THEME_KEY, encodeForm, exportAppsScript, exportFormJson, exportRestScript, parseFormJson } from "@/lib/form-storage";
 
 export const Route = createFileRoute("/")({
   component: HomePage,
@@ -321,6 +321,13 @@ function HomePage() {
                           },
                         );
                       }
+                    }}
+                    onExportRest={() => {
+                      exportRestScript(active);
+                      toast.success(
+                        "تم تنزيل سكربت البلوك الموحد — طبّق خطوة الـ manifest مرة واحدة (التعليمات أول الملف) ثم اختر buildFormRest وشغّل",
+                        { duration: 10000 },
+                      );
                     }}
                     onShare={shareActive}
                   />

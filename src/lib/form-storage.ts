@@ -471,6 +471,305 @@ function buildForm() {
   download(`${safeName(form.title)}-google-forms.gs`, script, "text/plain;charset=utf-8");
 }
 
+/* ---------- Google Forms export (REST mode: image INSIDE the question) ----------
+   FormApp cannot attach images to questions; the REST API can
+   (questionItem.image.sourceUri) with grading in the same item.
+   Requires one-time manifest scope: https://www.googleapis.com/auth/forms.body */
+
+export function exportRestScript(form: FormDoc) {
+  const MAX_UPLOAD_CHARS = 350000;
+  const MAX_TOTAL_CHARS = 2500000;
+  let usedChars = 0;
+  const slim = {
+    title: form.title,
+    description: form.description,
+    isQuiz: !!form.isQuiz,
+    questions: form.questions.map((q) => {
+      let upload = "";
+      let uploadTooBig = false;
+      if (q.image && q.image.startsWith("data:")) {
+        if (q.image.length <= MAX_UPLOAD_CHARS && usedChars + q.image.length <= MAX_TOTAL_CHARS) {
+          upload = q.image;
+          usedChars += q.image.length;
+        } else {
+          uploadTooBig = true;
+        }
+      }
+      return {
+        title: q.title,
+        description: q.description,
+        type: q.type,
+        required: q.required,
+        options: q.options,
+        max: q.max,
+        images: q.images || [],
+        upload,
+        uploadTooBig,
+        points: q.points || 0,
+        correct: q.correct || [],
+      };
+    }),
+  };
+  const b64 = utf8ToBase64(JSON.stringify(slim));
+  const b64Lines: string[] = [];
+  for (let i = 0; i < b64.length; i += 180) b64Lines.push(b64.slice(i, i + 180));
+  const b64Array = b64Lines.map((c) => `"${c}"`).join(",\n");
+  const script = `// تصدير "بلوك موحد (تجريبي)" من تطبيق "استنساخ" — الصورة داخل بطاقة السؤال + المفتاح + الدرجة
+// ============ خطوة واحدة إجبارية قبل أول تشغيل (دقيقتان، مرة واحدة فقط) ============
+// في محرر السكربت: ⚙ إعدادات المشروع ← فعّل "إظهار ملف Manifest (appsscript.json)"
+// افتح appsscript.json وأضف هذا السطر داخل القوسين (مع الاحتفاظ بأي سطور موجودة):
+//   "oauthScopes": [
+//     "https://www.googleapis.com/auth/forms",
+//     "https://www.googleapis.com/auth/forms.body",
+//     "https://www.googleapis.com/auth/drive",
+//     "https://www.googleapis.com/auth/script.external_request"
+//   ]
+// ثم شغّل buildFormRest. عند أول تشغيل اسمح بكل الأذونات.
+// لو ظهر خطأ Forms API غير مفعّلة: فعّلها من https://console.cloud.google.com/apis/library/forms.googleapis.com
+// ============ التشغيل ============
+// اختر الدالة buildFormRest ثم اضغط "تشغيل". تابع سجل التنفيذ سطراً سطراً.
+// ملاحظة: الصور الخاصة بصاحب النموذج (تسجيل دخول) تُتخطى تلقائياً مع تنبيه — استبدلها من موقعنا قبل التصدير.
+var DATA_B64 = [
+${b64Array}
+].join("");
+function myFunction() {
+  buildFormRest();
+}
+function buildFormRest() {
+  var data = JSON.parse(
+    Utilities.newBlob(Utilities.base64Decode(DATA_B64)).getDataAsString("UTF-8")
+  );
+  var token = ScriptApp.getOAuthToken();
+  var API = "https://forms.googleapis.com/v1/";
+
+  function safeParse(t) { try { return JSON.parse(t); } catch (e) { return null; } }
+  function rest(method, path, body) {
+    var params = {
+      method: method,
+      headers: { Authorization: "Bearer " + token },
+      contentType: "application/json",
+      muteHttpExceptions: true,
+    };
+    if (body) params.payload = JSON.stringify(body);
+    var r = UrlFetchApp.fetch(API + path, params);
+    return { code: r.getResponseCode(), text: r.getContentText(), json: safeParse(r.getContentText()) };
+  }
+  function needScopeStop(res) {
+    var t = String((res && res.text) || "");
+    if (res && (res.code === 401 || res.code === 403) && t.indexOf("insufficient authentication scopes") >= 0) {
+      Logger.log("تنبيه صلاحية: أضف سطر forms.body في appsscript.json كما في أول الملف ثم أعد التشغيل.");
+      return true;
+    }
+    if (res && res.code === 403 && t.indexOf("has not been used") >= 0) {
+      Logger.log("فعّل Forms API من: https://console.cloud.google.com/apis/library/forms.googleapis.com ثم أعد التشغيل.");
+      return true;
+    }
+    return false;
+  }
+
+  // 1) إنشاء النموذج
+  var cr = rest("post", "forms", { info: { title: data.title || "نموذج" } });
+  if (needScopeStop(cr)) return;
+  if (cr.code !== 200 || !cr.json || !cr.json.formId) {
+    Logger.log("فشل إنشاء النموذج عبر REST (" + cr.code + "). استخدم التصدير العادي (FormApp) لهذا النموذج.");
+    return;
+  }
+  var formId = cr.json.formId;
+  Logger.log("تم إنشاء النموذج: https://docs.google.com/forms/d/" + formId + "/edit");
+
+  // 2) الوصف + وضع الاختبار
+  if (data.description) {
+    rest("post", "forms/" + formId + ":batchUpdate", {
+      requests: [{ updateFormInfo: { info: { description: data.description }, updateMask: "description" } }],
+    });
+  }
+  if (data.isQuiz) {
+    rest("post", "forms/" + formId + ":batchUpdate", {
+      requests: [{ updateSettings: { settings: { quizSettings: { isQuiz: true } }, updateMask: "quizSettings.isQuiz" } }],
+    });
+  }
+
+  // 3) مجلد صور المرفوعات في درايف المستخدم
+  var imgFolder = null;
+  function ensureFolder() {
+    if (!imgFolder) imgFolder = DriveApp.createFolder("استنساخ-صور " + (data.title || "نموذج"));
+    return imgFolder;
+  }
+  function uploadToDrive(dataUrl, name) {
+    try {
+      var parts = dataUrl.split(",");
+      var mime = "image/jpeg";
+      var mh = parts[0].match(/data:([^;]+);/);
+      if (mh) mime = mh[1];
+      var f = ensureFolder().createFile(Utilities.newBlob(Utilities.base64Decode(parts[1]), mime, name));
+      f.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      return "https://drive.google.com/uc?export=view&id=" + f.getId();
+    } catch (e) {
+      Logger.log("تعذر رفع صورة مرفوعة إلى Drive.");
+      return null;
+    }
+  }
+  function urlFetchable(u) {
+    try {
+      var r = UrlFetchApp.fetch(u, { muteHttpExceptions: true });
+      if (r.getResponseCode() !== 200) return false;
+      var hs = r.getHeaders();
+      var ct = String(hs["Content-Type"] || hs["content-type"] || "");
+      return ct.toLowerCase().indexOf("image/") === 0;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  var created = 0;
+  var skipped = 0;
+  var noKey = 0;
+  var imgOk = 0;
+  var imgFail = 0;
+  var loc = 0;
+
+  function publicImgUrl(driveId) {
+    var u = "https://lh3.googleusercontent.com/d/" + driveId;
+    if (urlFetchable(u)) return u;
+    return null;
+  }
+
+  function buildItem(q, imgUrl, withGrading) {
+    var title = (q.title || "").trim() || q.description || "سؤال بدون عنوان";
+    var opts = (q.options || []).filter(function (o) { return o && String(o).trim() !== ""; });
+    var item = { title: title, description: q.description || "" };
+    var t = q.type;
+    var qi = null;
+    if (t === "short") {
+      qi = { question: { required: !!q.required, textQuestion: {} } };
+      item.questionItem = qi;
+    } else if (t === "paragraph") {
+      qi = { question: { required: !!q.required, textQuestion: { paragraph: true } } };
+      item.questionItem = qi;
+    } else if (t === "radio" || t === "checkbox" || t === "dropdown" || (t === "unknown" && opts.length)) {
+      var ctype = t === "checkbox" ? "CHECKBOX" : t === "dropdown" ? "DROP_DOWN" : "RADIO";
+      var ch = {
+        type: ctype,
+        options: (opts.length ? opts : ["خيار 1", "خيار 2"]).map(function (o) { return { value: o }; }),
+        shuffle: false,
+      };
+      var ques = { required: !!q.required, choiceQuestion: ch };
+      if (withGrading && data.isQuiz && q.correct && q.correct.length) {
+        var matched = [];
+        for (var ci = 0; ci < opts.length; ci++) {
+          for (var cj = 0; cj < q.correct.length; cj++) {
+            if (String(q.correct[cj]).trim() === String(opts[ci]).trim()) { matched.push({ value: opts[ci] }); break; }
+          }
+        }
+        if (matched.length) {
+          ques.grading = { pointValue: q.points > 0 ? q.points : 1, correctAnswers: { answers: matched } };
+        }
+      } else if (withGrading && data.isQuiz && q.points > 0) {
+        ques.grading = { pointValue: q.points };
+      }
+      qi = { question: ques };
+      item.questionItem = qi;
+    } else if (t === "scale" || t === "rating") {
+      var high = t === "rating" ? Math.max(2, q.max || 5) : Math.max(2, opts.length || 5);
+      item.questionItem = { question: { required: !!q.required, scaleQuestion: { low: 1, high: high } } };
+    } else if (t === "date") {
+      item.questionItem = { question: { required: !!q.required, dateQuestion: {} } };
+    } else if (t === "time") {
+      item.questionItem = { question: { required: !!q.required, timeQuestion: {} } };
+    } else if (t === "section") {
+      item.pageBreakItem = {};
+    } else if (t === "text") {
+      item.textItem = {};
+    } else if (t === "image") {
+      if (imgUrl) item.imageItem = { image: { sourceUri: imgUrl } };
+      else item.textItem = {};
+    } else {
+      item.textItem = {};
+      if (t === "file" || t === "signature") {
+        item.description = (item.description ? item.description + "\\n" : "") + "ملاحظة: أضف حقل رفع الملف/التوقيع يدوياً من محرر Google Forms.";
+      }
+      if (t === "unknown" && !opts.length) {
+        item.textItem = {};
+      }
+    }
+    if (imgUrl && item.questionItem) {
+      item.questionItem.image = { sourceUri: imgUrl };
+    }
+    return item;
+  }
+
+  for (var n = 0; n < data.questions.length; n++) {
+    var q = data.questions[n];
+    var imgUrl = null;
+    var allImgs = [];
+    // المرفوعات من الجهاز تُرفع لدرايفك أولاً
+    if (q.upload && q.upload.indexOf("data:") === 0) {
+      var up = uploadToDrive(q.upload, "q" + (n + 1) + ".jpg");
+      if (up) { allImgs.push(up); imgOk++; }
+      else { imgFail++; Logger.log("تعذر رفع صورة مرفوعة للسؤال: " + (q.title || ("سؤال " + (n + 1)))); }
+    } else if (q.uploadTooBig) {
+      imgFail++;
+      Logger.log("صورة مرفوعة كبيرة تُخطّت (أضفها يدوياً): " + (q.title || ("سؤال " + (n + 1))));
+    }
+    // صور Drive IDs العامة
+    var driveImgs = q.images || [];
+    for (var di = 0; di < driveImgs.length; di++) {
+      var du = publicImgUrl(driveImgs[di]);
+      if (du) { allImgs.push(du); imgOk++; }
+      else { imgFail++; Logger.log("تعذر الوصول لصورة (خاصة على الأرجح): " + driveImgs[di]); }
+    }
+    if (allImgs.length) imgUrl = allImgs[0];
+    if (allImgs.length > 1) {
+      Logger.log("ملاحظة: سؤال له أكثر من صورة — أُدرجت الأولى داخل السؤال: " + (q.title || ("سؤال " + (n + 1))));
+    }
+
+    var attempts = [
+      { img: imgUrl, grade: true },
+      { img: null, grade: true },
+      { img: null, grade: false },
+    ];
+    var done = false;
+    for (var a = 0; a < attempts.length && !done; a++) {
+      try {
+        var body = {
+          requests: [{ createItem: { item: buildItem(q, attempts[a].img, attempts[a].grade), location: { index: loc } } }],
+        };
+        var rr = rest("post", "forms/" + formId + ":batchUpdate", body);
+        if (rr.code === 200) {
+          done = true;
+          loc++;
+          created++;
+          var tt = ((q.title || "").trim() || "سؤال " + (n + 1));
+          if (data.isQuiz && (q.type === "radio" || q.type === "checkbox" || q.type === "dropdown") && attempts[a].grade && q.correct && q.correct.length) {
+            Logger.log("مفتاح الإجابة [" + tt + "]: " + q.correct.join("، "));
+          }
+          if (data.isQuiz && (q.type === "radio" || q.type === "checkbox" || q.type === "dropdown") && (!q.correct || !q.correct.length)) {
+            noKey++;
+          }
+        } else if (needScopeStop(rr)) {
+          return;
+        } else {
+          Logger.log("محاولة " + (a + 1) + " فشلت للسؤال [" + ((q.title || "").trim() || ("سؤال " + (n + 1))) + "] (" + rr.code + "): " + String(rr.text).slice(0, 200));
+        }
+      } catch (ee) {
+        Logger.log("استثناء أثناء إنشاء سؤال: " + ee);
+      }
+    }
+    if (!done) {
+      skipped++;
+      Logger.log("تُخطّي سؤال بعد 3 محاولات: " + ((q.title || "").trim() || ("سؤال " + (n + 1))));
+    }
+    if ((n + 1) % 10 === 0) Logger.log("تقدم: " + (n + 1) + "/" + data.questions.length);
+  }
+
+  Logger.log("تم إنشاء " + created + " عنصراً" + (skipped ? " (تُخطّي " + skipped + ")" : "") + (noKey ? " — تنبيه: " + noKey + " سؤال بلا مفتاح إجابة" : ""));
+  Logger.log("الصور داخل الأسئلة: " + imgOk + (imgFail ? " (تعذر " + imgFail + ")" : ""));
+  Logger.log("رابط التحرير: https://docs.google.com/forms/d/" + formId + "/edit");
+}
+`;
+  download(`${safeName(form.title)}-rest.gs`, script, "text/plain;charset=utf-8");
+}
+
 /* ---------- responses export ---------- */
 
 function csvCell(v: string) {

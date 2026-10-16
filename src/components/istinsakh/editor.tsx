@@ -39,6 +39,7 @@ export function Editor({
   onReorder,
   onExport,
   onExportGoogle,
+  onExportRest,
   onShare,
 }: {
   form: FormDoc;
@@ -52,6 +53,7 @@ export function Editor({
   onReorder: (questions: Question[]) => void;
   onExport: () => void;
   onExportGoogle: () => void;
+  onExportRest: () => void;
   onShare: () => void;
 }) {
   const sensors = useSensors(
@@ -355,6 +357,13 @@ export function Editor({
           </button>
           <button onClick={onExportGoogle} className={toolBtn}>
             <FileUp className="h-3.5 w-3.5" aria-hidden /> تصدير إلى Google Forms
+          </button>
+          <button
+            onClick={onExportRest}
+            className={toolBtn}
+            title="وضع تجريبي: الصورة داخل بطاقة السؤال + المفتاح + الدرجة عبر REST API — يتطلب خطوة manifest مرة واحدة (التعليمات أول الملف)"
+          >
+            <FileUp className="h-3.5 w-3.5" aria-hidden /> بلوك موحد (تجريبي)
           </button>
           <button onClick={onShare} className={toolBtn}>
             <Share2 className="h-3.5 w-3.5" aria-hidden /> نسخ رابط المشاركة
