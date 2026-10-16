@@ -83,6 +83,18 @@ export const fetchGoogleForm = createServerFn({ method: "POST" })
     const isDriveId = (v: unknown) =>
       typeof v === "string" && /^[A-Za-z0-9_-]{25,}$/.test(v) && /[A-Za-z_-]/.test(v);
 
+    // جامع صور تراجعي: مواضع الصور تتحرك بين النماذج (الخانة 8 أو 9 أو متداخلة)،
+    // فيُمسح ذيل العنصر (من الخانة 5 بعد metadata) ويُلتقط أي Drive ID أينما كان.
+    const collectDriveIds = (node: unknown, out: string[]) => {
+      if (typeof node === "string") {
+        if (isDriveId(node) && !out.includes(node)) out.push(node);
+        return;
+      }
+      if (Array.isArray(node)) {
+        for (const el of node) collectDriveIds(el, out);
+      }
+    };
+
     // ---------- هوية النموذج (اللون + الخط) ----------
     const toHex = (r: number, g: number, b: number) =>
       "#" +
@@ -122,10 +134,14 @@ export const fetchGoogleForm = createServerFn({ method: "POST" })
       }
     }
 
-    // صورة الترويسة: العنصر type=11 يحمل Drive ID في الخانة الخامسة
+    // صورة الترويسة: العنصر type=11 يحمل Drive ID في موضع متغير من ذيله
     let headerImage: string | undefined;
     const head = rawQuestions.find((item: any) => item?.[3] === 11);
-    if (head && isDriveId(head[5])) headerImage = head[5] as string;
+    if (head) {
+      const ids: string[] = [];
+      collectDriveIds((head as any[]).slice(5), ids);
+      if (ids.length) headerImage = ids[0];
+    }
 
     const questions = rawQuestions
       .map((item: any, idx: number) => {
@@ -140,10 +156,14 @@ export const fetchGoogleForm = createServerFn({ method: "POST" })
           .map((o: any) => trim(o?.[0]));
         const points = typeof meta?.[8] === "number" && meta[8] > 0 ? meta[8] : undefined;
         const required = Boolean(meta?.[2]);
-        // صور السؤال: item[8] = [[driveId, null, [w,h,1]], ...]
-        const images = Array.isArray(item[8])
-          ? item[8].map((e: any) => e?.[0]).filter(isDriveId)
-          : [];
+        // صور السؤال: Drive IDs في مواضع متغيرة من ذيل العنصر + صور الخيارات المحتملة
+        const images: string[] = [];
+        if (Array.isArray(item)) collectDriveIds(item.slice(5), images);
+        if (Array.isArray(optionsRaw)) {
+          for (const o of optionsRaw) {
+            if (Array.isArray(o)) collectDriveIds(o.slice(1), images);
+          }
+        }
         // قاعدة تحقق نصية: meta[4] = [[op, ?, args, message]]
         let validation: { op: number; args: string[]; message?: string } | undefined;
         if ((t === 0 || t === 1) && Array.isArray(meta?.[4]) && meta[4].length) {
