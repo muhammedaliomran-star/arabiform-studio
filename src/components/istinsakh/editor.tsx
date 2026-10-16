@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { fetchGoogleScore } from "@/lib/google-score.functions";
 import {
@@ -17,9 +17,10 @@ import {
   verticalListSortingStrategy,
   arrayMove,
 } from "@dnd-kit/sortable";
-import { Download, Share2, Layers, Plus, FileUp, GraduationCap, X, Palette, Copy, Check } from "lucide-react";
+import { Download, Share2, Layers, Plus, FileUp, GraduationCap, X, Palette, Copy, Check, Images } from "lucide-react";
 import type { FormDoc, Question } from "@/lib/form-types";
 import { driveImageUrl, isAnswerable, shadeHex, applyScoreKeys } from "@/lib/form-types";
+import { MAX_BATCH_FILES, MAX_RAW_FILE_BYTES, compressImageFile } from "@/lib/image-compress";
 import { QuestionEditor } from "./question-editor";
 
 const focusRing =
@@ -65,6 +66,80 @@ export function Editor({
   const [scoreUrl, setScoreUrl] = useState("");
   const [scoreLoading, setScoreLoading] = useState(false);
   const [scoreMsg, setScoreMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const batchRef = useRef<HTMLInputElement>(null);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchMsg, setBatchMsg] = useState<string | null>(null);
+  const [batchUndo, setBatchUndo] = useState<{ ids: string[]; prev: (string | undefined)[] } | null>(null);
+
+  const imagelessCount = form.questions.filter(
+    (q) => q.type !== "section" && !q.image && !(q.images ?? []).length,
+  ).length;
+
+  const handleBatch = async (files: FileList | null) => {
+    if (!files?.length || batchLoading) return;
+    setBatchLoading(true);
+    setBatchMsg(null);
+    setBatchUndo(null);
+    try {
+      const arr = [...files]
+        .filter((f) => f.type.startsWith("image/"))
+        .slice(0, MAX_BATCH_FILES)
+        .sort((a, b) => a.name.localeCompare(b.name, "en"));
+      if (!arr.length) {
+        setBatchMsg("لا توجد ملفات صور صالحة.");
+        return;
+      }
+      const targets = form.questions.filter(
+        (q) => q.type !== "section" && !q.image && !(q.images ?? []).length,
+      );
+      const dataUrls: string[] = [];
+      let skipped = 0;
+      for (const f of arr) {
+        if (f.size > MAX_RAW_FILE_BYTES) {
+          skipped++;
+          continue;
+        }
+        try {
+          dataUrls.push(await compressImageFile(f));
+        } catch {
+          skipped++;
+        }
+      }
+      const n = Math.min(dataUrls.length, targets.length);
+      if (!n) {
+        setBatchMsg("تعذّرت قراءة الملفات أو لا توجد أسئلة بلا صور.");
+        return;
+      }
+      const slice = targets.slice(0, n);
+      const urlById = new Map(slice.map((q, i) => [q.id, dataUrls[i]]));
+      onUpdate({
+        questions: form.questions.map((q) =>
+          urlById.has(q.id) ? { ...q, image: urlById.get(q.id) } : q,
+        ),
+      });
+      setBatchUndo({ ids: slice.map((q) => q.id), prev: slice.map((q) => q.image) });
+      setBatchMsg(
+        `تم إرفاق ${n} صورة بالترتيب` +
+          (targets.length - n > 0 ? ` — بقي ${targets.length - n} بلا صور` : "") +
+          (dataUrls.length - n > 0 ? ` — ${dataUrls.length - n} ملفات زائدة لم تُستخدم` : "") +
+          (skipped > 0 ? ` — تُخطّي ${skipped} ملفات` : ""),
+      );
+    } finally {
+      setBatchLoading(false);
+    }
+  };
+
+  const undoBatch = () => {
+    if (!batchUndo) return;
+    const prevById = new Map(batchUndo.ids.map((id, i) => [id, batchUndo.prev[i]]));
+    onUpdate({
+      questions: form.questions.map((q) =>
+        prevById.has(q.id) ? { ...q, image: prevById.get(q.id) } : q,
+      ),
+    });
+    setBatchUndo(null);
+    setBatchMsg("تم التراجع عن آخر دفعة.");
+  };
 
   const handleScoreImport = async () => {
     if (!scoreUrl.trim() || scoreLoading) return;
@@ -361,7 +436,40 @@ export function Editor({
         >
           <Layers className="inline h-4 w-4" aria-hidden /> إضافة قسم
         </button>
+        <button
+          onClick={() => batchRef.current?.click()}
+          disabled={batchLoading || imagelessCount === 0}
+          className={`rounded-2xl border-2 border-dashed border-border bg-surface/50 px-6 py-4 text-sm font-bold text-muted-foreground transition hover:border-primary/40 hover:bg-accent hover:text-accent-foreground disabled:opacity-40 ${focusRing}`}
+          title={imagelessCount === 0 ? "كل الأسئلة لها صور" : `إرفاق صور دفعة واحدة (${imagelessCount} بلا صور)`}
+        >
+          <Images className="inline h-4 w-4" aria-hidden />{" "}
+          {batchLoading ? "جارٍ الإرفاق..." : `إرفاق صور دفعة (${imagelessCount})`}
+        </button>
+        <input
+          ref={batchRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            handleBatch(e.target.files);
+            e.target.value = "";
+          }}
+        />
       </div>
+      {(batchMsg || batchUndo) && (
+        <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-surface px-4 py-3 text-xs">
+          {batchMsg && <span className="font-semibold text-muted-foreground">{batchMsg}</span>}
+          {batchUndo && (
+            <button
+              onClick={undoBatch}
+              className={`ms-auto rounded-lg border border-border px-3 py-1.5 font-bold transition hover:bg-secondary ${focusRing}`}
+            >
+              تراجع عن الدفعة
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

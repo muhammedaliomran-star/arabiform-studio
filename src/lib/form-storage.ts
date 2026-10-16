@@ -1,5 +1,6 @@
 import type { FormDoc, FormResponse, Store } from "./form-types";
 import { isAnswerable, uid } from "./form-types";
+import { MAX_TOTAL_UPLOAD_CHARS, MAX_UPLOAD_CHARS } from "./image-compress";
 
 export const STORAGE_KEY = "istinsakh:v1";
 export const THEME_KEY = "istinsakh:theme";
@@ -81,8 +82,7 @@ export function exportAppsScript(form: FormDoc) {
   const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   // الصور المرفوعة من الجهاز تُضمَّن فقط إن كانت صغيرة (data URL) وبسقف إجمالي
   // حتى لا يتضخم ملف السكربت — الكبيرة تُترك للعرض مع تنبيه.
-  const MAX_UPLOAD_CHARS = 350000;
-  const MAX_TOTAL_CHARS = 2500000;
+  // (الثوابت مستوردة من image-compress لتتوافق مع حد التنبيه في المحرر)
   let usedChars = 0;
   const slim = {
     title: form.title,
@@ -94,7 +94,7 @@ export function exportAppsScript(form: FormDoc) {
       let upload = "";
       let uploadTooBig = false;
       if (q.image && q.image.startsWith("data:")) {
-        if (q.image.length <= MAX_UPLOAD_CHARS && usedChars + q.image.length <= MAX_TOTAL_CHARS) {
+        if (q.image.length <= MAX_UPLOAD_CHARS && usedChars + q.image.length <= MAX_TOTAL_UPLOAD_CHARS) {
           upload = q.image;
           usedChars += q.image.length;
         } else {

@@ -4,6 +4,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { GripVertical, Copy, Trash2, ImagePlus, X, ChevronUp, ChevronDown } from "lucide-react";
 import type { Question, QType } from "@/lib/form-types";
 import { TYPE_LABEL, OPTION_TYPES, extractDriveId } from "@/lib/form-types";
+import { MAX_UPLOAD_CHARS, compressImageFile } from "@/lib/image-compress";
 import { DriveImage } from "./drive-image";
 
 const focusRing =
@@ -42,36 +43,7 @@ export function QuestionEditor({
   };
 
   /** Downscale uploaded photos (max 740px, JPEG) so they stay exportable. */
-  const compressImage = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(file);
-      const img = new Image();
-      img.onload = () => {
-        try {
-          const scale = Math.min(1, 740 / img.naturalWidth);
-          const w = Math.max(1, Math.round(img.naturalWidth * scale));
-          const h = Math.max(1, Math.round(img.naturalHeight * scale));
-          const canvas = document.createElement("canvas");
-          canvas.width = w;
-          canvas.height = h;
-          const ctx = canvas.getContext("2d");
-          if (!ctx) throw new Error("canvas");
-          ctx.fillStyle = "#ffffff";
-          ctx.fillRect(0, 0, w, h);
-          ctx.drawImage(img, 0, 0, w, h);
-          resolve(canvas.toDataURL("image/jpeg", 0.82));
-        } catch (e) {
-          reject(e);
-        } finally {
-          URL.revokeObjectURL(url);
-        }
-      };
-      img.onerror = () => {
-        URL.revokeObjectURL(url);
-        reject(new Error("load"));
-      };
-      img.src = url;
-    });
+  const compressImage = (file: File): Promise<string> => compressImageFile(file);
   const hasOptions = OPTION_TYPES.includes(q.type as QType) && q.type !== "scale";
   const isSection = q.type === "section";
   const noAnswer = q.type === "section" || q.type === "text" || q.type === "image";
@@ -367,7 +339,7 @@ export function QuestionEditor({
             }
             compressImage(f)
               .then((dataUrl) => {
-                if (dataUrl.length > 350000) {
+                if (dataUrl.length > MAX_UPLOAD_CHARS) {
                   alert("الصورة كبيرة — ستظهر للعرض فقط ولن تُضمَّن في التصدير لجوجل.");
                 }
                 onChange({ image: dataUrl });
