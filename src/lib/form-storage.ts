@@ -164,6 +164,7 @@ function buildForm() {
   // القبول فقط لنوع image/* — صفحات تسجيل الدخول (text/html) تُرفض
   var imgOk = 0;
   var imgFail = 0;
+  var untitled = 0;
   function isImageBlob(b, r) {
     if (!b) return false;
     try {
@@ -227,7 +228,12 @@ function buildForm() {
   for (var qi = 0; qi < data.questions.length; qi++) {
     var q = data.questions[qi];
     try {
-      var title = (q.title || "").trim() || q.description || "سؤال بدون عنوان";
+      var rawTitle = (q.title || "").trim();
+      if (!rawTitle && !(q.description || "").trim()) {
+        untitled++;
+        rawTitle = "سؤال " + untitled;
+      }
+      var title = rawTitle || (q.description || "").trim() || "سؤال بدون عنوان";
       var opts = (q.options || []).filter(function (o) { return o && String(o).trim() !== ""; });
       var imgNote = "";
       // صورة مرفوعة من الجهاز (مضمّنة ومضغوطة مسبقاً) — تُزرع مباشرة
@@ -238,9 +244,7 @@ function buildForm() {
           var umh = uparts[0].match(/data:([^;]+);/);
           if (umh) umime = umh[1];
           var ub = Utilities.newBlob(Utilities.base64Decode(uparts[1]), umime);
-          var ui = gf.addImageItem();
-          ui.setImage(ub);
-          if (ui.setTitle) ui.setTitle(title);
+          gf.addImageItem().setImage(ub);
         } catch (ue) {
           imgNote += " [تعذر إرفاق الصورة المرفوعة — أضفها يدوياً من محرر Google Forms]";
           Logger.log("تعذر إرفاق الصورة المرفوعة للسؤال: " + title);
@@ -254,9 +258,8 @@ function buildForm() {
         try {
           var ib = imageBlob(qimgs[ii]);
           if (ib) {
-            var im = gf.addImageItem();
-            im.setImage(ib);
-            if (im.setTitle) im.setTitle(title);
+            // عنصر الصورة بلا عنوان عمداً حتى لا يُتوهم سؤالاً مستقلاً في المحرر
+            gf.addImageItem().setImage(ib);
           } else {
             imgNote += " [صورة: https://drive.google.com/file/d/" + qimgs[ii] + "/view]";
           }
