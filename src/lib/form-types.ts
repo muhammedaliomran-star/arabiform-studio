@@ -44,6 +44,8 @@ export type Question = {
   validation?: TextValidation;
   /** Google's internal item id (for matching score imports) */
   gid?: string;
+  /** Google form entry id (for building prefill links) */
+  entryId?: string;
 };
 
 /** هوية النموذج البصرية المستنسخة من نموذج جوجل الأصلي */
@@ -149,7 +151,6 @@ export function normalizeAnswer(s: string): string {
 }
 
 export type ScoreKey = { gid: string; total: number; correct?: string };
-
 /**
  * Apply imported score keys to questions: match by Google id first,
  * fall back to document order for id-less (old) clones. Sets correct[] + points.
@@ -236,4 +237,46 @@ export function paginate(questions: Question[]) {
   }
   if (current.items.length || current.section) pages.push(current);
   return pages.length ? pages : [{ section: null, items: [] }];
+}
+
+/**
+ * Build a prefilled viewform URL that opens the SOURCE Google Form with dummy
+ * answers already filled (first option / sample text / validation-passing text).
+ * The user reviews and submits manually, then imports keys from the score link.
+ * Returns null when the form has no source URL or no entry ids (old clones).
+ */
+export function buildPrefillUrl(form: FormDoc): string | null {
+  if (!form.sourceUrl) return null;
+  const params = new URLSearchParams();
+  params.set("usp", "pp_url");
+  let n = 0;
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, "0");
+  const dd = String(today.getDate()).padStart(2, "0");
+  for (const q of form.questions) {
+    if (!q.entryId || !isAnswerable(q)) continue;
+    let v: string | undefined;
+    if (q.validation && q.validation.args.length) {
+      // قيمة تجتاز قاعدة "يحتوي على" (مثل كلمة السر) حتى لا يعلق الإرسال
+      v = q.validation.args[0];
+    } else if (q.type === "radio" || q.type === "checkbox" || q.type === "dropdown") {
+      v = q.options[0];
+    } else if (q.type === "short" || q.type === "paragraph") {
+      v = "أ";
+    } else if (q.type === "date") {
+      v = `${yyyy}-${mm}-${dd}`;
+    } else if (q.type === "time") {
+      v = "12:00";
+    } else if (q.type === "scale") {
+      v = q.options[Math.floor(q.options.length / 2)] ?? q.options[0];
+    }
+    if (v) {
+      params.append(`entry.${q.entryId}`, v);
+      n++;
+    }
+  }
+  if (!n) return null;
+  const base = form.sourceUrl.split("?")[0];
+  return `${base}?${params.toString()}`;
 }

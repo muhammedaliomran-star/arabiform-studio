@@ -17,9 +17,9 @@ import {
   verticalListSortingStrategy,
   arrayMove,
 } from "@dnd-kit/sortable";
-import { Download, Share2, Layers, Plus, FileUp, GraduationCap, X, Palette, Copy, Check, Images } from "lucide-react";
+import { Download, Share2, Layers, Plus, FileUp, GraduationCap, X, Palette, Copy, Check, Images, ExternalLink } from "lucide-react";
 import type { FormDoc, Question } from "@/lib/form-types";
-import { driveImageUrl, isAnswerable, shadeHex, applyScoreKeys } from "@/lib/form-types";
+import { driveImageUrl, isAnswerable, shadeHex, applyScoreKeys, buildPrefillUrl } from "@/lib/form-types";
 import { MAX_BATCH_FILES, MAX_RAW_FILE_BYTES, compressImageFile } from "@/lib/image-compress";
 import { QuestionEditor } from "./question-editor";
 
@@ -61,6 +61,7 @@ export function Editor({
 
   const sections = form.questions.filter((q) => q.type === "section");
   const theme = form.theme;
+  const prefillUrl = buildPrefillUrl(form);
   const [copied, setCopied] = useState<string | null>(null);
   const fetchScore = useServerFn(fetchGoogleScore);
   const [scoreUrl, setScoreUrl] = useState("");
@@ -364,6 +365,23 @@ export function Editor({
           <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
             أجب محاولة واحدة (ولو غلط) ثم الصق رابط «عرض النتيجة» — سنعلّم ✓ والدرجات تلقائياً.
           </p>
+          {prefillUrl ? (
+            <a
+              href={prefillUrl}
+              target="_blank"
+              rel="noreferrer"
+              className={`mt-2 inline-flex items-center gap-1.5 rounded-xl border border-primary/40 bg-primary/10 px-4 py-2.5 text-xs font-bold text-primary transition hover:bg-primary/20 ${focusRing}`}
+            >
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+              فتح الأصل بإجابات جاهزة (راجع ثم أرسل في جوجل)
+            </a>
+          ) : (
+            form.sourceUrl && (
+              <p className="mt-2 text-[11px] font-semibold text-muted-foreground">
+                لفتح الأصل بإجابات جاهزة: أعد استنساخ النموذج من رابطه لالتقاط معرفات الحقول.
+              </p>
+            )
+          )}
           <div className="mt-2 flex flex-col gap-2 md:flex-row">
             <input
               value={scoreUrl}
