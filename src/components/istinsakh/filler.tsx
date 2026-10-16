@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import type { Answer, FormDoc, Question } from "@/lib/form-types";
-import { driveImageUrl, isAnswerable, paginate } from "@/lib/form-types";
+import { isAnswerable, paginate } from "@/lib/form-types";
 import { FieldInput } from "./field-input";
+import { DriveImage } from "./drive-image";
 
 const focusRing =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
@@ -94,8 +95,8 @@ export function Filler({
         }
       >
         {form.headerImage && (
-          <img
-            src={driveImageUrl(form.headerImage)}
+          <DriveImage
+            id={form.headerImage}
             alt="صورة النموذج"
             className="mb-4 max-h-56 w-full rounded-xl border border-white/30 object-cover"
           />
@@ -162,13 +163,7 @@ export function Filler({
             <img src={q.image} alt={q.title} className="mb-3 max-h-64 rounded-xl border border-border" />
           )}
           {(q.images ?? []).map((id) => (
-            <img
-              key={id}
-              src={driveImageUrl(id)}
-              alt={q.title || "صورة السؤال"}
-              className="mb-3 max-h-64 rounded-xl border border-border"
-              loading="lazy"
-            />
+            <DriveImage key={id} id={id} alt={q.title || "صورة السؤال"} />
           ))}
           {isAnswerable(q) || (q.type === "unknown" && q.options.length > 0) ? (
             <FieldInput q={q} value={answers[q.id]} onChange={(v) => set(q.id, v)} />

@@ -118,6 +118,14 @@ export function driveFileUrl(id: string): string {
   return `https://drive.google.com/file/d/${id}/view`;
 }
 
+/** Extract a Drive file ID from a raw ID or a full Drive URL. */
+export function extractDriveId(s: string): string | null {
+  const t = s.trim();
+  if (/^[A-Za-z0-9_-]{25,}$/.test(t)) return t;
+  const m = t.match(/[?&]id=([A-Za-z0-9_-]{25,})|\/d\/([A-Za-z0-9_-]{25,})/);
+  return m ? (m[1] ?? m[2]) : null;
+}
+
 /** Darken/lighten a #RRGGBB hex color by percent (-100..100). */
 export function shadeHex(hex: string, percent: number): string {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());

@@ -79,31 +79,50 @@ function utf8ToBase64(text: string): string {
 
 export function exportAppsScript(form: FormDoc) {
   const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // الصور المرفوعة من الجهاز تُضمَّن فقط إن كانت صغيرة (data URL) وبسقف إجمالي
+  // حتى لا يتضخم ملف السكربت — الكبيرة تُترك للعرض مع تنبيه.
+  const MAX_UPLOAD_CHARS = 350000;
+  const MAX_TOTAL_CHARS = 2500000;
+  let usedChars = 0;
   const slim = {
     title: form.title,
     description: form.description,
     isQuiz: !!form.isQuiz,
     headerImage: form.headerImage || "",
     theme: form.theme || null,
-    questions: form.questions.map((q) => ({
-      title: q.title,
-      description: q.description,
-      type: q.type,
-      required: q.required,
-      options: q.options,
-      max: q.max,
-      images: q.images || [],
-      hasImage: !!q.image,
-      points: q.points || 0,
-      correct: q.correct || [],
-      validation: q.validation
-        ? {
-            op: q.validation.op,
-            args: q.validation.args.map(escRe),
-            message: q.validation.message || "",
-          }
-        : null,
-    })),
+    questions: form.questions.map((q) => {
+      let upload = "";
+      let uploadTooBig = false;
+      if (q.image && q.image.startsWith("data:")) {
+        if (q.image.length <= MAX_UPLOAD_CHARS && usedChars + q.image.length <= MAX_TOTAL_CHARS) {
+          upload = q.image;
+          usedChars += q.image.length;
+        } else {
+          uploadTooBig = true;
+        }
+      }
+      return {
+        title: q.title,
+        description: q.description,
+        type: q.type,
+        required: q.required,
+        options: q.options,
+        max: q.max,
+        images: q.images || [],
+        hasImage: !!q.image && !upload && !uploadTooBig,
+        upload,
+        uploadTooBig,
+        points: q.points || 0,
+        correct: q.correct || [],
+        validation: q.validation
+          ? {
+              op: q.validation.op,
+              args: q.validation.args.map(escRe),
+              message: q.validation.message || "",
+            }
+          : null,
+      };
+    }),
   };
   // البيانات تُضمَّن مشفَّرة بـ base64 (حروف وأرقام فقط) حتى لا يكسر أي محرف
   // عربي أو رمز خاص أو سطر جديد بنيةَ الكود — حل لمشكلة "Invalid or unexpected token".
@@ -142,16 +161,31 @@ function buildForm() {
   // 1) الرابط العام المباشر — يعمل متى كانت الصورة ظاهرة في النموذج الأصلي
   // 2) نفس الرابط بتوكن المستخدم — للصور المشاركة معه دون العموم
   // 3) DriveApp كاحتياط أخير (يُبقي إذن Drive مطلوباً لهذه الحالة فقط)
+  // القبول فقط لنوع image/* — صفحات تسجيل الدخول (text/html) تُرفض
   var imgOk = 0;
   var imgFail = 0;
+  function isImageBlob(b, r) {
+    if (!b) return false;
+    try {
+      var ct = "";
+      if (r && r.getHeaders) {
+        var hs = r.getHeaders();
+        ct = String(hs["Content-Type"] || hs["content-type"] || "");
+      }
+      if (ct && ct.toLowerCase().indexOf("image/") !== 0) return false;
+      var bytes = b.getBytes();
+      if (!bytes || bytes.length < 1000) return false;
+      return true;
+    } catch (e0) {
+      return false;
+    }
+  }
   function imageBlob(src) {
     var u = "https://lh3.googleusercontent.com/d/" + src;
     try {
       var r1 = UrlFetchApp.fetch(u, { muteHttpExceptions: true });
-      if (r1.getResponseCode() === 200) {
-        var b1 = r1.getBlob();
-        if (b1.getBytes().length > 1000) { imgOk++; return b1; }
-      }
+      var b1 = r1.getResponseCode() === 200 ? r1.getBlob() : null;
+      if (isImageBlob(b1, r1)) { imgOk++; return b1; }
     } catch (e1) {}
     try {
       var tok = ScriptApp.getOAuthToken();
@@ -159,16 +193,14 @@ function buildForm() {
         headers: { Authorization: "Bearer " + tok },
         muteHttpExceptions: true,
       });
-      if (r2.getResponseCode() === 200) {
-        var b2 = r2.getBlob();
-        if (b2.getBytes().length > 1000) { imgOk++; return b2; }
-      }
+      var b2 = r2.getResponseCode() === 200 ? r2.getBlob() : null;
+      if (isImageBlob(b2, r2)) { imgOk++; return b2; }
     } catch (e2) {}
     try {
       if (typeof DriveApp !== "undefined") {
         var b3 = DriveApp.getFileById(src).getBlob();
-        imgOk++;
-        return b3;
+        var ct3 = String((b3.getContentType && b3.getContentType()) || "");
+        if (ct3.toLowerCase().indexOf("image/") === 0) { imgOk++; return b3; }
       }
     } catch (e3) {
       Logger.log("تعذر قراءة صورة Drive: " + src);
@@ -198,6 +230,24 @@ function buildForm() {
       var title = (q.title || "").trim() || q.description || "سؤال بدون عنوان";
       var opts = (q.options || []).filter(function (o) { return o && String(o).trim() !== ""; });
       var imgNote = "";
+      // صورة مرفوعة من الجهاز (مضمّنة ومضغوطة مسبقاً) — تُزرع مباشرة
+      if (q.upload && q.upload.indexOf("data:") === 0) {
+        try {
+          var uparts = q.upload.split(",");
+          var umime = "image/jpeg";
+          var umh = uparts[0].match(/data:([^;]+);/);
+          if (umh) umime = umh[1];
+          var ub = Utilities.newBlob(Utilities.base64Decode(uparts[1]), umime);
+          var ui = gf.addImageItem();
+          ui.setImage(ub);
+          if (ui.setTitle) ui.setTitle(title);
+        } catch (ue) {
+          imgNote += " [تعذر إرفاق الصورة المرفوعة — أضفها يدوياً من محرر Google Forms]";
+          Logger.log("تعذر إرفاق الصورة المرفوعة للسؤال: " + title);
+        }
+      } else if (q.uploadTooBig) {
+        imgNote += " [ملاحظة: الصورة المرفوعة كبيرة — أضفها يدوياً من محرر Google Forms]";
+      }
       // صور السؤال (تُضاف قبل السؤال نفسه حتى تظهر فوقه)
       var qimgs = q.images || [];
       for (var ii = 0; ii < qimgs.length; ii++) {

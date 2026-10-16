@@ -1,9 +1,10 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical, Copy, Trash2, ImagePlus, X, ChevronUp, ChevronDown } from "lucide-react";
 import type { Question, QType } from "@/lib/form-types";
-import { TYPE_LABEL, OPTION_TYPES, driveImageUrl } from "@/lib/form-types";
+import { TYPE_LABEL, OPTION_TYPES, extractDriveId } from "@/lib/form-types";
+import { DriveImage } from "./drive-image";
 
 const focusRing =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
@@ -31,6 +32,46 @@ export function QuestionEditor({
     id: q.id,
   });
   const fileRef = useRef<HTMLInputElement>(null);
+  const [driveIdInput, setDriveIdInput] = useState("");
+
+  const addDriveId = () => {
+    const v = extractDriveId(driveIdInput);
+    if (!v) return;
+    if (!(q.images ?? []).includes(v)) onChange({ images: [...(q.images ?? []), v] });
+    setDriveIdInput("");
+  };
+
+  /** Downscale uploaded photos (max 740px, JPEG) so they stay exportable. */
+  const compressImage = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const scale = Math.min(1, 740 / img.naturalWidth);
+          const w = Math.max(1, Math.round(img.naturalWidth * scale));
+          const h = Math.max(1, Math.round(img.naturalHeight * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) throw new Error("canvas");
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL("image/jpeg", 0.82));
+        } catch (e) {
+          reject(e);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("load"));
+      };
+      img.src = url;
+    });
   const hasOptions = OPTION_TYPES.includes(q.type as QType) && q.type !== "scale";
   const isSection = q.type === "section";
   const noAnswer = q.type === "section" || q.type === "text" || q.type === "image";
@@ -133,11 +174,14 @@ export function QuestionEditor({
       )}
       {(q.images ?? []).map((id) => (
         <div key={id} className="relative mt-3 inline-block me-2">
-          <img
-            src={driveImageUrl(id)}
+          <DriveImage
+            id={id}
             alt="صورة السؤال من جوجل"
             className="max-h-56 rounded-xl border border-border"
-            loading="lazy"
+            onReplace={() => {
+              onChange({ images: (q.images ?? []).filter((x) => x !== id) });
+              fileRef.current?.click();
+            }}
           />
           <button
             onClick={() => onChange({ images: (q.images ?? []).filter((x) => x !== id) })}
@@ -148,6 +192,27 @@ export function QuestionEditor({
           </button>
         </div>
       ))}
+      {q.type !== "section" && (
+        <div className="mt-2 flex items-center gap-2">
+          <input
+            value={driveIdInput}
+            onChange={(e) => setDriveIdInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") addDriveId();
+            }}
+            placeholder="Drive ID من درايفك (اختياري)"
+            dir="ltr"
+            aria-label="Drive ID من درايفك"
+            className={`min-w-0 flex-1 rounded-lg border border-input bg-surface px-3 py-1.5 text-xs outline-none placeholder:text-muted-foreground focus:border-ring ${focusRing}`}
+          />
+          <button
+            onClick={addDriveId}
+            className={`rounded-lg border border-border px-3 py-1.5 text-xs font-semibold transition hover:bg-secondary ${focusRing}`}
+          >
+            إضافة صورة
+          </button>
+        </div>
+      )}
 
       {q.validation && (
         <p className="mt-3 rounded-lg border border-border bg-surface px-3 py-2 text-[11px] text-muted-foreground">
@@ -292,13 +357,22 @@ export function QuestionEditor({
             const f = e.target.files?.[0];
             e.target.value = "";
             if (!f) return;
-            if (f.size > 1.5 * 1024 * 1024) {
-              alert("الصورة أكبر من 1.5 ميجابايت.");
+            if (!f.type.startsWith("image/")) {
+              alert("اختر ملف صورة.");
               return;
             }
-            const reader = new FileReader();
-            reader.onload = () => onChange({ image: String(reader.result) });
-            reader.readAsDataURL(f);
+            if (f.size > 8 * 1024 * 1024) {
+              alert("الصورة أكبر من 8 ميجابايت.");
+              return;
+            }
+            compressImage(f)
+              .then((dataUrl) => {
+                if (dataUrl.length > 350000) {
+                  alert("الصورة كبيرة — ستظهر للعرض فقط ولن تُضمَّن في التصدير لجوجل.");
+                }
+                onChange({ image: dataUrl });
+              })
+              .catch(() => alert("تعذر قراءة الصورة."));
           }}
         />
         <button onClick={onDup} aria-label="تكرار السؤال" className={`rounded p-1.5 hover:bg-secondary ${focusRing}`}>
