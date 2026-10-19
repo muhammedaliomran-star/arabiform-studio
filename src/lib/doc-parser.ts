@@ -71,41 +71,52 @@ export function parseDocText(raw: string): ParsedBlock[] {
   const blocks: ParsedBlock[] = [];
   let i = 0;
   const n = lines.length;
+  let questionNumber = 0;
 
   const hasHL = (s: string) => s.includes("[[HL]]");
   const stripHL = (s: string) =>
     s.replace(/\[\[HL\]\]/g, "").replace(/\[\[\/HL\]\]/g, "").trim();
+
+  // strip option prefix like: "A) ", "1. ", "Ø£) " etc.
+  const stripOptionPrefix = (s: string): string =>
+    s.replace(/^([\u0621-\u064A]{1,3}|[A-Za-z]{1,2}|\d{1,2})[\)\.\uFF1A:]\s*/i, "").trim();
 
   while (i < n) {
     const cur = lines[i];
     const curClean = stripHL(cur);
     if (!curClean) { i++; continue; }
 
+    // detect numbered question: "1. text" or "2) text" or Arabic-Indic "1. text"
     const numberedQ =
       curClean.match(/^(\d+)[\)\.]\s*(.+)/) ||
       curClean.match(/^[\u0660-\u0669]{1,2}[\)\.]\s*(.+)/);
     const isQuestionMark = /[\u061F?]/.test(curClean);
 
     if (numberedQ || (isQuestionMark && curClean.length > 10)) {
-      const title = numberedQ ? numberedQ[2].trim() : curClean;
+      questionNumber++;
+      const rawTitle = numberedQ ? numberedQ[2].trim() : curClean;
+      const title = questionNumber + ". " + rawTitle;
       const options: string[] = [];
-      let correctAnswer: string[] = [];
+      const correctAnswer: string[] = [];
 
+      // collect following short lines as options
       let j = i + 1;
       while (j < n) {
         const optClean = stripHL(lines[j]);
         if (!optClean) { j++; continue; }
 
-        const optNumbered =
-          optClean.match(/^([\u0621-\u064A]|[A-Za-z]\d*|\d+)[\)\.]\s*(.+)/);
-        const isShort = optClean.length <= 100 && !/[\u061F?]/.test(optClean);
+        // detect if this is a new numbered question (stop collecting options)
         const isNextQ = optClean.match(/^(\d+)[\)\.]\s*(.+)/);
+        const isShort = optClean.length <= 100 && !/[\u061F?]/.test(optClean);
 
         if (isShort && !isNextQ) {
-          const optText = optNumbered ? optNumbered[2].trim() : optClean;
-          options.push(optText);
-          if (hasHL(lines[j])) {
-            correctAnswer.push(optText);
+          // strip any existing option prefix like "A) " or "1. "
+          const optText = stripOptionPrefix(optClean);
+          if (optText.length > 0) {
+            options.push(optText);
+            if (hasHL(lines[j])) {
+              correctAnswer.push(optText);
+            }
           }
           j++;
         } else {
@@ -113,8 +124,11 @@ export function parseDocText(raw: string): ParsedBlock[] {
         }
       }
 
+      // always use radio type for questions with 2+ options
+      const kind = options.length >= 2 ? "radio" : "short";
+
       blocks.push({
-        kind: options.length >= 2 ? "radio" : "short",
+        kind: kind,
         title: title,
         options: options,
         correct: correctAnswer.length > 0 ? correctAnswer : undefined,
@@ -124,11 +138,13 @@ export function parseDocText(raw: string): ParsedBlock[] {
       continue;
     }
 
+    // analogy pattern: "word: meaning"
     const analogy = curClean.match(/^(\S{2,50})\s*[:\uFF1A]\s*(\S{2,50})$/);
     if (analogy && !numberedQ) {
+      questionNumber++;
       blocks.push({
         kind: "short",
-        title: "\u0623\u0643\u0645\u0644 \u0627\u0644\u0639\u0644\u0627\u0642\u0629: " + analogy[1] + " : \u061F",
+        title: questionNumber + ". \u0623\u0643\u0645\u0644 \u0627\u0644\u0639\u0644\u0627\u0642\u0629: " + analogy[1] + " : \u061F",
         options: [],
         correct: [analogy[2]],
         required: true,
@@ -137,9 +153,11 @@ export function parseDocText(raw: string): ParsedBlock[] {
       continue;
     }
 
+    // standalone line - treat as short answer
+    questionNumber++;
     blocks.push({
       kind: "short",
-      title: curClean,
+      title: questionNumber + ". " + curClean,
       options: [],
       required: true,
     });
@@ -148,6 +166,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
   return blocks;
 }
+
 
 
 /** تحويل كتل المحلّل إلى أسئلة من النوع المستخدم في التطبيق */
