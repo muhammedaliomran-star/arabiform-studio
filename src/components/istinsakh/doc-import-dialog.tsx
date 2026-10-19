@@ -255,7 +255,7 @@ export function DocImportDialog({
                     {pdfLoading &&
                       file.name.toLowerCase().endsWith(".pdf") && (
                         <span className="ml-2 animate-pulse text-xs text-primary">
-                          (جارٍ تحميل مكتبة PDF…)
+                          (جارٍ استخراج النص من PDF…)
                         </span>
                       )}
                   </span>
