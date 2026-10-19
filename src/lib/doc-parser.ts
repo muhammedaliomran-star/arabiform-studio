@@ -80,13 +80,13 @@ export function parseDocText(raw: string): ParsedBlock[] {
     let t = s;
     // Latin letter + dot/dash + digits: "V.1 ", "VI.2 "
     t = t.replace(/^[A-Za-z]{1,4}[\.\-]\d{1,3}[\)\.\-\:]\s*/i, "");
-    // Arabic letter + dot + digits: "A.3 " "A.4 " (alef-dot-digit)
+    // Arabic letter + dot + digits: "A.3 "
     t = t.replace(/^[\u0621-\u064A]{1,3}\.\s*[\u0660-\u0669]{1,3}[\)\.\-\uFF1D]\s*/, "");
-    // Arabic-Indic digits: "9. " "9) " "9- "
+    // Arabic-Indic digits: "1. " "1) " "1- "
     t = t.replace(/^[\u0660-\u0669]{1,3}[\)\.\-\uFF1D]\s*/, "");
-    // Regular digits: "9. " "9) " "9- "
+    // Regular digits: "1. " "1) " "1- "
     t = t.replace(/^\d{1,3}[\)\.\-\uFF1D]\s*/, "");
-    // Arabic letter alone with dot: "A. " (alef-dot-space)
+    // Arabic letter + dot: "A. "
     t = t.replace(/^[\u0621-\u064A]{1,3}\.\s+/, "");
     return t.trim();
   };
@@ -99,11 +99,11 @@ export function parseDocText(raw: string): ParsedBlock[] {
     if (/^[\u0660-\u0669]{1,2}[\-\.\uFF1D\)]\s*/.test(s)) return true;
     // Regular digits prefix: "1- " etc.
     if (/^\d{1,2}[\-\.\uFF1D\)]\s*/.test(s)) return true;
-    // Arabic letter prefix: "A) " etc.
+    // Arabic letter prefix
     if (/^[\u0623\u0628\u062C\u062F\u0647\u0648\u0632\u062D\u0637\u064A\u0643\u0644\u0645\u0646\u0633\u0639\u0641\u0635\u0642\u0631\u0634\u062A\u062B\u062E\u0630\u0636\u0638\u063A]{1,2}[\)\.\uFF1A:]\s*/.test(s)) return true;
-    // English letter prefix: "A) " etc.
+    // English letter prefix
     if (/^[A-Za-z]{1,2}[\)\.\uFF1A:]\s*/.test(s)) return true;
-    // analogy format: "word : word" (like "honey: trade")
+    // analogy format: "word : word"
     if (/^.{2,40}\s*[\:\uFF1A]\s*.{2,40}$/.test(s)) return true;
     return false;
   };
@@ -121,16 +121,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
     const curClean = stripHL(cur);
     if (!curClean) { i++; continue; }
 
-    // skip orphaned option lines
-    if (isOptionLine(curClean)) {
-      i++;
-      continue;
-    }
-
-    // strip source numbering from the question title
-    const cleanTitle = stripSourceNumber(curClean);
-
-    // look ahead for options following this line
+    // ALWAYS look ahead for options first - any line followed by 2+ options is a question
     const options: string[] = [];
     const correctAnswer: string[] = [];
     let j = i + 1;
@@ -154,7 +145,9 @@ export function parseDocText(raw: string): ParsedBlock[] {
       }
     }
 
-    // if 2+ options found, this is a multiple choice question
+    const cleanTitle = stripSourceNumber(curClean);
+
+    // if 2+ options found, this line is a question (even if it starts with a digit like "1- question")
     if (options.length >= 2) {
       questionNumber++;
 
@@ -169,13 +162,19 @@ export function parseDocText(raw: string): ParsedBlock[] {
       continue;
     }
 
-    // no options found - skip short section headers without question marks
+    // no options found - skip orphaned option lines
+    if (isOptionLine(curClean)) {
+      i++;
+      continue;
+    }
+
+    // skip short section headers without question marks
     if (cleanTitle.length < 30 && !/[\u061F?]/.test(cleanTitle)) {
       i++;
       continue;
     }
 
-    // treat as short answer question with sequential number
+    // treat as short answer question
     questionNumber++;
     blocks.push({
       kind: "short",
@@ -188,6 +187,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
   return blocks;
 }
+
 
 
 
