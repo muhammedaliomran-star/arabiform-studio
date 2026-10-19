@@ -218,9 +218,9 @@ export function DocImportDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[calc(100vw-1rem)] sm:w-[calc(100vw-2rem)] max-w-4xl h-[92dvh] sm:h-[85dvh] flex flex-col gap-0 overflow-hidden p-4 sm:p-6">
+      <DialogContent className="w-[calc(100vw-1rem)] sm:w-[calc(100vw-2rem)] max-w-4xl h-[92dvh] sm:h-[85dvh] flex flex-col gap-3 overflow-y-auto p-4 sm:p-6 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent">
         <DialogClose />
-        <DialogHeader className="shrink-0">
+        <DialogHeader className="shrink-0 sticky top-0 z-10 bg-background -mx-4 sm:-mx-6 px-4 sm:px-6 py-1">
           <DialogTitle className="flex items-center gap-2">
             <FileText className="h-5 w-5 text-primary" aria-hidden />
             استيراد أسئلة من ملف / نص
@@ -231,7 +231,7 @@ export function DocImportDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto pr-1 sm:pr-2">
+        <div className="flex flex-col gap-3">
           {/* مصدر الاستيراد */}
           <section className="surface-card p-4 rounded-xl border border-border">
             <div className="flex flex-col gap-3">
@@ -459,7 +459,7 @@ export function DocImportDialog({
           ) : null}
         </div>
 
-        <DialogFooter className="shrink-0 pt-3 border-t border-border/50 mt-1">
+        <DialogFooter className="shrink-0 sticky bottom-0 z-10 bg-background -mx-4 sm:-mx-6 px-4 sm:px-6 py-3 border-t border-border/50 -mb-4 sm:-mb-6">
           <div className="flex flex-col-reverse sm:flex-row w-full gap-2 sm:gap-2 sm:justify-end">
             <Button onClick={() => onOpenChange(false)} variant="outline" className="w-full sm:w-auto">
               إلغاء
