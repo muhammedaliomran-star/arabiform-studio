@@ -89,19 +89,36 @@ async function readDocxFile(file: File): Promise<string> {
   }
 
   const xml = new TextDecoder("utf-8").decode(docXmlBytes);
-  // استخراج محتوى وسوم <w:t>...</w:t>
-  const parts = xml.split("<w:t");
-  const words: string[] = [];
-  for (let i = 1; i < parts.length; i++) {
-    const close = parts[i].indexOf(">");
-    if (close < 0) continue;
-    const after = parts[i].slice(close + 1);
-    const end = after.indexOf("<");
-    const word = end < 0 ? after : after.slice(0, end);
-    if (word) words.push(word);
-  }
+  // فك ترميز الكيانات الأساسية في XML
+  const decodeXml = (s: string): string =>
+    s
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&#x([0-9a-fA-F]+);/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16)))
+      .replace(/&#(\d+);/g, (_m, dec) => String.fromCharCode(parseInt(dec, 10)))
+      .replace(/&amp;/g, "&"); // آخرًا لتفادي "&amp;amp;"
 
-  const joined = words.join(" ");
+  // تقسيم حسب الفقرات <w:p ...> أو <w:p> أولاً، ثم استخراج النصوص داخل كل فقرة.
+  // هذا يحافظ على حدود الأسطر/الفقرات بدل دمج كل شيء في سطر واحد.
+  const paragraphs = xml.split(/<w:p[\s>]/);
+  const lines: string[] = [];
+  for (let i = 1; i < paragraphs.length; i++) {
+    const para = paragraphs[i];
+    const paraEnd = para.indexOf("</w:p>");
+    const paraContent = paraEnd >= 0 ? para.slice(0, paraEnd) : para;
+    // استخراج النصوص من الوسوم <w:t ...>...</w:t>
+    const runs: string[] = [];
+    const runRe = /<w:t[^>]*>([^<]*)<\/w:t>/g;
+    let m: RegExpExecArray | null;
+    while ((m = runRe.exec(paraContent)) !== null) {
+      runs.push(decodeXml(m[1]));
+    }
+    const line = runs.join("").trim();
+    lines.push(line);
+  }
+  const joined = lines.join("\n");
   return joined.trim().length > 0 ? joined : xml.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 }
 
@@ -597,3 +614,4 @@ export function conversionHint(file: File): string {
   }
   return `نوع الملف "${ext}" غير مدعوم للاستيراد النصي.`;
 }
+
