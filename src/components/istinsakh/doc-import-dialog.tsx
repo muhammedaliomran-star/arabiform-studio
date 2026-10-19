@@ -238,7 +238,7 @@ export function DocImportDialog({
                   onClick={() => fileInput.current?.click()}
                   className="rounded-xl border border-dashed border-input bg-surface px-4 py-3 text-sm hover:bg-secondary transition"
                 >
-                  <FileUpload className="h-4 w-4 mr-2" aria-hidden />
+                  <FileUp className="h-4 w-4 mr-2" aria-hidden />
                                 اختر ملف
                 </button>
                 <input
