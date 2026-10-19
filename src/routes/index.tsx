@@ -248,7 +248,7 @@ function HomePage() {
           onImport={handleImport}
           onBlank={createBlank}
           onImportJson={handleImportJson}
-          onImportDoc={handleImportDoc}
+          onImportDoc={() => setDocImportOpen(true)}
           onTemplate={handleTemplate}
           loading={loading}
           error={error}

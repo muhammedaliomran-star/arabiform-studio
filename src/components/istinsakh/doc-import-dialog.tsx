@@ -16,7 +16,7 @@ import {
 import {
   Upload,
   FileText,
-  FileUpload,
+  FileUp,
   Trash2,
   RotateCcw,
   CheckCircle2,
@@ -233,7 +233,7 @@ export function DocImportDialog({
                   onClick={() => fileInput.current?.click()}
                   className="rounded-xl border border-dashed border-input bg-surface px-4 py-3 text-sm hover:bg-secondary transition"
                 >
-                  <FileUpload className="h-4 w-4 mr-2" aria-hidden />
+                  <FileUp className="h-4 w-4 mr-2" aria-hidden />
                                 اختر ملف نصي
                 </button>
                 <input
@@ -387,7 +387,7 @@ export function DocImportDialog({
                       b.correct && (
                         <div className="mt-2 flex items-center gap-1 text-xs text-green-700 bg-green-50/50 rounded px-2 py-1">
                           <CheckCircle2 className="h-3 w-3" aria-hidden />
-                          <span>مفتاح الإجابة المقترح: <b>{b.correct}</b></span>
+                          <span>مفتاح الإجابة المقترح: <b>{b.correct.join("، ")}</b></span>
                         </div>
                       )
                     )}
@@ -402,7 +402,7 @@ export function DocImportDialog({
               <AlertTriangle className="h-4 w-4 mx-auto mb-2" aria-hidden />
               لم يتم استخراج أسئلة بعد. اضغط "حلّل النص الصق" أعلاه.
             </div>
-          )}
+          ) : null}
         </div>
 
         <DialogFooter>
