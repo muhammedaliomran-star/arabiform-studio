@@ -46,6 +46,7 @@ function HomePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [docImportOpen, setDocImportOpen] = useState(false);
+  const [deleteAllOpen, setDeleteAllOpen] = useState(false);
 
   // Light mode is the default for first-time visitors.
   useEffect(() => {
@@ -140,6 +141,19 @@ function HomePage() {
       toast.success(`تم إنشاء نموذج من ${questions.length} سؤالاً`);
     }
     setDocImportOpen(false);
+  };
+
+  const deleteAllForms = () => {
+    if (
+      !confirm(
+        `هل أنت متأكد؟ سيتم حذف كل النماذج (${store.forms.length}) نهائيًا ولا يمكن التراجع.`
+      )
+    )
+      return;
+    commit({ forms: [], responses: {} });
+    setActiveId(null);
+    setMode("edit");
+    toast.success("تم حذف جميع النماذج");
   };
 
   const handleTemplate = (key: string) => {
@@ -266,6 +280,14 @@ function HomePage() {
             <h2 className="mb-3 text-sm font-bold tracking-tight text-muted-foreground">
               نماذجك ({store.forms.length})
             </h2>
+            {store.forms.length > 0 && (
+              <button
+                onClick={deleteAllForms}
+                className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs text-destructive transition hover:bg-destructive/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive"
+              >
+                مسح كل النماذج ({store.forms.length})
+              </button>
+            )}
             {store.forms.length === 0 && (
               <p className="text-sm text-muted-foreground">
                 لا توجد نماذج بعد. الصق رابطًا أو ابدأ من الصفر.
