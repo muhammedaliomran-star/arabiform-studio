@@ -10,7 +10,7 @@ export type ParsedBlock = {
   /** الخيرات المقترحة (يعدل/يحذف/يزيد) */
   options: string[];
   /** الإجابة الصحيحة المقترحة إن وجدت (يترك فارغاً لو غير متأكد) */
-  correct?: string;
+  correct?: string[];
   /** هل السؤال مطلوب */
   required: boolean;
 };
@@ -91,7 +91,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
           kind: "short",
           title: `أكمل العلاقة: ${a} : ؟`,
           options: [],
-          correct: b,
+          correct: b ? [b] : undefined,
           required: true,
         });
         i++;
@@ -168,11 +168,7 @@ export function blocksToQuestions(
     q.description = "";
     q.required = b.required;
     q.options = b.options.filter((o) => o.length > 0);
-    q.correct = b.correct ? [b.correct] : [];
-    // إذا كان من نوع إجابة قصيرة وكان لديه إجابة مقترحة، اجعلها مفتاحاً (اختبار مصحح)
-    if (q.type === "short" && b.correct) {
-      q.correct = [b.correct];
-    }
+    q.correct = b.correct ?? [];
     return q;
   });
 }
