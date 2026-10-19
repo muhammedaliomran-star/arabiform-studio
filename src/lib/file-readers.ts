@@ -102,31 +102,61 @@ function loadPdfJs(): Promise<any> {
   if (pdfjsLib) return Promise.resolve(pdfjsLib);
   if (pdfjsLoading) return pdfjsLoading;
 
-  // إصدار UMD مستقر من pdf.js يدعم تحميله عبر <script> التقليدي بدون build step.
-  const pdfjsUrl =
-    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.391/pdf.min.js";
-  const workerUrl =
-    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.391/pdf.worker.min.js";
+  // قائمة روابط CDN للمكتبة (يُجرب الأولى ثم الاحتياطية تلقائياً).
+  const cdnSources: Array<{ lib: string; worker: string }> = [
+    {
+      lib: "https://cdn.jsdelivr.net/npm/pdfjs-dist@legacy/build/pdf.min.js",
+      worker: "https://cdn.jsdelivr.net/npm/pdfjs-dist@legacy/build/pdf.worker.min.js",
+    },
+    {
+      lib: "https://unpkg.com/pdfjs-dist@legacy/build/pdf.min.js",
+      worker: "https://unpkg.com/pdfjs-dist@legacy/build/pdf.worker.min.js",
+    },
+  ];
 
-  pdfjsLoading = new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = pdfjsUrl;
-    script.onload = () => {
-      const lib = (window as any).pdfjsLib ?? (window as any).pdfjsDist;
-      if (lib) {
-        lib.GlobalWorkerOptions.workerSrc = workerUrl;
-        pdfjsLib = lib;
-        resolve(lib);
-      } else {
-        reject(new Error("تم تحميل pdf.js لكنه لم يُعرّف بشكل صحيح."));
-      }
-    };
-    script.onerror = () =>
-      reject(new Error("تعذّر تحميل مكتبة قراءة ملفات PDF من الإنترنت."));
-    document.head.appendChild(script);
-  });
+  let lastError: string | null = null;
 
-  return pdfjsLoading;
+  const tryNext = (index: number): Promise<any> => {
+    if (index >= cdnSources.length) {
+      return rejectLast();
+    }
+    const { lib, worker } = cdnSources[index];
+    return new Promise<any>((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = lib;
+      script.onload = () => {
+        const loadedLib = (window as any).pdfjsLib ?? (window as any).pdfjsDist;
+        if (loadedLib) {
+          loadedLib.GlobalWorkerOptions.workerSrc = worker;
+          pdfjsLib = loadedLib;
+          resolve(loadedLib);
+        } else {
+          lastError = "تم تحميل pdf.js لكنه لم يُعرّف بشكل صحيح.";
+          rejectLastInternal(index + 1, resolve, reject);
+        }
+      };
+      script.onerror = () => {
+        lastError = `تعذّر تحميل المكتبة من ${lib}.`;
+        rejectLastInternal(index + 1, resolve, reject);
+      };
+      document.head.appendChild(script);
+    });
+  };
+
+  const rejectLastInternal = (
+    nextIndex: number,
+    resolve: (value: any) => void,
+    reject: (reason?: any) => void
+  ) => {
+    tryNext(nextIndex).then(resolve, (err) => reject(err ?? lastError));
+  };
+
+  const rejectLast = (): Promise<any> =>
+    Promise.reject(
+      new Error(lastError || "تعذّر تحميل مكتبة قراءة ملفات PDF من الإنترنت.")
+    );
+
+  return tryNext(0);
 }
 
 async function readPdfFile(file: File): Promise<string> {
