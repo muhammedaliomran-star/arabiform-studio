@@ -31,7 +31,7 @@ import {
   type ParsedBlock,
 } from "@/lib/doc-parser";
 import {
-  readTextFile,
+  readFileContent,
   isSupportedTextFile,
   conversionHint,
 } from "@/lib/file-readers";
@@ -52,6 +52,7 @@ export function DocImportDialog({
   const [file, setFile] = useState<File | null>(null);
   const [blocks, setBlocks] = useState<ParsedBlock[]>([]);
   const [parsing, setParsing] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const parseNow = useCallback(
@@ -67,7 +68,10 @@ export function DocImportDialog({
             setParsing(false);
             return;
           }
-          raw = await readTextFile(source);
+          if (source.name.toLowerCase().endsWith(".pdf")) {
+            setPdfLoading(true);
+          }
+          raw = await readFileContent(source);
           setFile(source);
         }
         const parsed = parseDocText(raw);
@@ -83,6 +87,7 @@ export function DocImportDialog({
         console.error(err);
       } finally {
         setParsing(false);
+        setPdfLoading(false);
       }
     },
     [],
@@ -215,8 +220,8 @@ export function DocImportDialog({
             استيراد أسئلة من ملف / نص
           </DialogTitle>
           <DialogDescription>
-            استخرج الأسئلة والاختيارات من ملف نصي أو الصق النص مباشرة، راجع
-            كل سؤال وعدّل عليه قبل الاستيراد إلى نموذجك.
+            استخرج الأسئلة والاختيارات من ملف نصي (.txt) أو PDF أو وورد (.docx)،
+            أو الصق النص مباشرة. راجع كل سؤال وعدّل عليه قبل الاستيراد إلى نموذجك.
           </DialogDescription>
         </DialogHeader>
 
@@ -226,7 +231,7 @@ export function DocImportDialog({
             <div className="flex flex-col gap-3">
               <div className="flex items-center gap-2 text-sm font-semibold">
                 <Upload className="h-4 w-4" aria-hidden />
-                ملف نصي (.txt)
+                ملف نصي / PDF / وورد (.docx)
               </div>
               <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
                 <button
@@ -234,18 +239,24 @@ export function DocImportDialog({
                   className="rounded-xl border border-dashed border-input bg-surface px-4 py-3 text-sm hover:bg-secondary transition"
                 >
                   <FileUpload className="h-4 w-4 mr-2" aria-hidden />
-                                اختر ملف نصي
+                                اختر ملف
                 </button>
                 <input
                   ref={fileInput}
                   type="file"
-                  accept=".txt,.md"
+                  accept=".txt,.md,.pdf,.docx"
                   className="hidden"
                   onChange={handleFileChange}
                 />
                 {file && (
                   <span className="text-xs text-muted-foreground">
                     {file.name} ({Math.round(file.size / 1024)} ك.ب)
+                    {pdfLoading &&
+                      file.name.toLowerCase().endsWith(".pdf") && (
+                        <span className="ml-2 animate-pulse text-xs text-primary">
+                          (جارٍ تحميل مكتبة PDF…)
+                        </span>
+                      )}
                   </span>
                 )}
               </div>
