@@ -402,7 +402,7 @@ export function DocImportDialog({
               <AlertTriangle className="h-4 w-4 mx-auto mb-2" aria-hidden />
               لم يتم استخراج أسئلة بعد. اضغط "حلّل النص الصق" أعلاه.
             </div>
-          )}
+          ) : null}
         </div>
 
         <DialogFooter>
