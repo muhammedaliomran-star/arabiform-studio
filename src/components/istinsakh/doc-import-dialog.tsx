@@ -218,7 +218,7 @@ export function DocImportDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col">
+      <DialogContent className="w-[calc(100vw-1rem)] sm:w-full max-w-4xl max-h-[90dvh] sm:max-h-[85vh] flex flex-col gap-0 overflow-hidden p-4 sm:p-6">
         <DialogClose />
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -231,7 +231,7 @@ export function DocImportDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-3 overflow-y-auto max-h-[55vh] pr-2">
+        <div className="flex flex-col gap-3 flex-1 min-h-0 overflow-y-auto pr-1 sm:pr-2">
           {/* مصدر الاستيراد */}
           <section className="surface-card p-4 rounded-xl border border-border">
             <div className="flex flex-col gap-3">
@@ -346,7 +346,7 @@ export function DocImportDialog({
                 </button>
               </div>
 
-              <div className="p-4 space-y-3 overflow-y-auto max-h-[30vh] pr-2">
+              <div className="p-4 space-y-3">
                 {blocks.map((b, idx) => (
                   <div
                     key={b.title + idx}
@@ -459,21 +459,23 @@ export function DocImportDialog({
           ) : null}
         </div>
 
-        <DialogFooter>
-          <Button onClick={() => onOpenChange(false)} variant="outline">
-            إلغاء
-          </Button>
-          <Button
-            onClick={handleImport}
-            disabled={blocks.length === 0 || parsing}
-            className="ml-auto"
-          >
-            {parsing ? "جاري…" : "تأكيد واستيراد إلى النموذج"}
-          </Button>
+        <DialogFooter className="shrink-0 pt-3 border-t border-border/50 mt-1">
+          <div className="flex flex-col-reverse sm:flex-row w-full gap-2 sm:gap-2 sm:justify-end">
+            <Button onClick={() => onOpenChange(false)} variant="outline" className="w-full sm:w-auto">
+              إلغاء
+            </Button>
+            <Button
+              onClick={handleImport}
+              disabled={blocks.length === 0 || parsing}
+              className="w-full sm:w-auto"
+            >
+              {parsing ? "جاري…" : "تأكيد واستيراد إلى النموذج"}
+            </Button>
+          </div>
         </DialogFooter>
         {/* نافذة معاينة كاملة للنص المستخرج */}
         <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-          <DialogContent className="max-w-2xl max-h-[80vh] p-6">
+          <DialogContent className="w-[calc(100vw-1rem)] sm:w-full max-w-2xl max-h-[90dvh] sm:max-h-[80vh] p-4 sm:p-6 flex flex-col gap-0 overflow-hidden">
             <DialogClose />
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
