@@ -80,18 +80,18 @@ export function parseDocText(raw: string): ParsedBlock[] {
     let t = s;
     // "V.1 " "VI.2 " (Latin letter + dot + digits)
     t = t.replace(/^[A-Za-z]{1,4}[\.\-]\d{1,3}[\)\.\-\:]\s*/i, "");
-    // "A.3 " (Arabic letter + dot + Arabic-Indic digits)
+    // Arabic letter + dot/dash + Arabic-Indic digits: "A.3 "
     t = t.replace(/^[\u0621-\u064A]{1,3}[\.\-]\s*[\u0660-\u0669]{1,3}[\)\.\-\uFF1D]\s*/, "");
-    // Arabic-Indic digits + any separator: "1. " "1- " "1) " plus dot variants
-    t = t.replace(/^[\u0660-\u0669]{1,3}[\.\-\)\uFF1E\uFF1D\u066B\u06D4]\s*/, "");
-    // Regular digits + any separator: "1. " "1- " "1) "
-    t = t.replace(/^\d{1,3}[\.\-\)\uFF1E\uFF1D]\s*/, "");
+    // Arabic-Indic digits + dot: "1. " (dot REQUIRED so "1 text" number-in-text is untouched)
+    t = t.replace(/^[\u0660-\u0669]{1,3}[\.\uFF1E\u066B\u06D4]\s*/, "");
+    // Regular digits + dot: "1. "
+    t = t.replace(/^\d{1,3}[\.\uFF1E]\s*/, "");
     // Arabic letter + dot/dash + space: "A. "
     t = t.replace(/^[\u0621-\u064A]{1,3}[\.\-]\s+/, "");
     return t.trim();
   };
 
-  // question-number line: "1." "1)" digit-dot (NOT digit-dash) "V.1" "A.3"
+  // question-number line: "1." "1)" "1)" digit+dot/digit+) (NOT digit+dash)
   const isQuestionNumberLine = (s: string): boolean => {
     if (/^[A-Za-z]{1,4}[\.\-]\d{1,3}[\)\.\-\:]/i.test(s)) return true;
     if (/^[\u0621-\u064A]{1,3}[\.\-]\s*[\u0660-\u0669]{1,3}[\)\.\-\uFF1D]/.test(s)) return true;
@@ -102,12 +102,28 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
   // section header: starts with a section keyword (never a question)
   const isSectionHeader = (s: string): boolean =>
-    /^(?:\u0642\u0633\u0645|\u0627\u0644\u0641\u0635\u0644|\u0627\u0644\u0648\u062D\u062F\u0629|\u0627\u0644\u062F\u0631\u0633|\u0627\u0644\u0628\u0627\u0628)[\s(\u0600-\u06FF]/.test(s);
+    /^(?:\u0642\u0633\u0645|\u0627\u0644\u0641\u0635\u0644|\u0627\u0644\u0648\u062d\u062f\u0629|\u0627\u0644\u062f\u0631\u0633|\u0627\u0644\u0628\u0627\u0628)[\s(\u0600-\u06FF]/.test(s);
 
-  // extract option text: strip ONLY real prefixes (digits, 1-2 Latin letters, single Arabic letter + paren)
+  // extract option text: strip prefixes
   const extractOptionText = (s: string): string => {
-    return s.replace(/^(?:[\u0660-\u0669]{1,3}|\d{1,3}|[A-Za-z]{1,2}|[\u0621-\u064A][\)\.])[\-\.\)\uFF1D\uFF1A:]\s*/, "").trim();
+    let t = s;
+    // Arabic-Indic digits + separator: "1- " "1. " "1) "
+    t = t.replace(/^[\u0660-\u0669]{1,2}[\-\.\)\uFF1D\uFF1A:]\s*/, "");
+    // Regular digits + separator: "1- " "1. " "1) "
+    t = t.replace(/^\d{1,2}[\-\.\)\uFF1D\uFF1A:]\s*/, "");
+    // Arabic single letter + paren/colon: "A) " "A: "
+    t = t.replace(/^[\u0621-\u064A][\)\uFF1A:]\s*/, "");
+    // Arabic 2-letter prefix + paren/colon: "Aa) " (rare)
+    t = t.replace(/^[\u0621-\u064A]{2}[\)\uFF1A:]\s+(?=[\u0621-\u064A])/, "");
+    // English letter + paren/colon: "A) " "A: "
+    t = t.replace(/^[A-Za-z]{1,2}[\)\uFF1A:]\s*/, "");
+    return t.trim();
   };
+
+  // detect option prefix pattern (digit or letter at start)
+  const hasOptionPrefix = (s: string): boolean =>
+    /^(?:[\u0660-\u0669]{1,2}|\d{1,2})[\-\.\)\uFF1D\uFF1A:]\s*\S/.test(s) ||
+    /^(?:[\u0621-\u064A]{1,2}|[A-Za-z]{1,2})[\)\uFF1A:]\s*\S/.test(s);
 
   let i = 0;
   let questionNumber = 0;
@@ -133,24 +149,23 @@ export function parseDocText(raw: string): ParsedBlock[] {
       const optClean = stripHL(optRaw);
       if (!optClean) { j++; continue; }
 
-      // stop at next question or section header
+      // stop at next question number line or section header
       if (isQuestionNumberLine(optClean) || isSectionHeader(optClean)) break;
       if (optClean.length > 80) break;
       if (/[?\u061F]\s*$/.test(optClean)) break;
 
-      const hasDigitDash = /^(?:[\u0660-\u0669]{1,2}|\d{1,2})[\-\uFF1D]\s*\S/.test(optClean);
-      const hasLetterParen = /^(?:[\u0621-\u064A]{1,2}|[A-Za-z]{1,2})[\)\uFF1A:]\s*\S/.test(optClean);
+      const prefixed = hasOptionPrefix(optClean);
       const hasColon = /^[^:]{1,60}[:\uFF1A]\s*[^:]{1,60}$/.test(optClean);
 
-      // prefixed options always accepted; bare "word : word" only when no prefixed option seen yet
-      const isOpt = hasDigitDash || hasLetterParen || (hasColon && prefixedCount === 0);
+      // prefixed options always accepted; bare "word : word" only before any prefixed option
+      const isOpt = prefixed || (hasColon && prefixedCount === 0);
       if (!isOpt) break;
 
       const optText = extractOptionText(optClean);
       if (optText.length > 0) {
         options.push(optText);
         if (hasHL(optRaw)) correctAnswer.push(optText);
-        if (hasDigitDash || hasLetterParen) prefixedCount++;
+        if (prefixed) prefixedCount++;
       }
       j++;
       if (options.length >= 10) break;
@@ -171,7 +186,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
     }
 
     // orphaned prefixed option line (no parent question) - skip
-    if (/^(?:[\u0660-\u0669]{1,2}|\d{1,2})[\-\uFF1D]\s*\S/.test(curClean)) { i++; continue; }
+    if (hasOptionPrefix(curClean)) { i++; continue; }
 
     // short line without question mark - likely leftover header, skip
     if (cleanTitle.length < 40 && !/[\u061F?]/.test(cleanTitle)) { i++; continue; }
@@ -189,6 +204,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
   return blocks;
 }
+
 
 
 
