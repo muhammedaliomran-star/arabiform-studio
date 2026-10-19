@@ -75,42 +75,46 @@ export function parseDocText(raw: string): ParsedBlock[] {
   const stripHL = (s: string) =>
     s.replace(/\[\[HL\]\]/g, "").replace(/\[\[\/HL\]\]/g, "").trim();
 
-  // strip source numbering prefixes from titles
+  // strip source numbering prefixes from question titles
   const stripSourceNumber = (s: string): string => {
     let t = s;
     // Latin letter + dot/dash + digits: "V.1 ", "VI.2 "
     t = t.replace(/^[A-Za-z]{1,4}[\.\-]\d{1,3}[\)\.\-\:]\s*/i, "");
     // Arabic letter + dot + digits: "A.3 "
     t = t.replace(/^[\u0621-\u064A]{1,3}\.\s*[\u0660-\u0669]{1,3}[\)\.\-\uFF1D]\s*/, "");
-    // Arabic-Indic digits: "1. " "1) " "1- "
-    t = t.replace(/^[\u0660-\u0669]{1,3}[\)\.\-\uFF1D]\s*/, "");
-    // Regular digits: "1. " "1) " "1- "
-    t = t.replace(/^\d{1,3}[\)\.\-\uFF1D]\s*/, "");
+    // Arabic-Indic digits with dot: "1. " (question number like "1.")
+    t = t.replace(/^[\u0660-\u0669]{1,3}[\.\uFF1E]\s*/, "");
+    // Arabic-Indic digits with ) or -: "1) " "1- "
+    t = t.replace(/^[\u0660-\u0669]{1,3}[\)\-\uFF1D]\s*/, "");
+    // Regular digits with dot: "1. "
+    t = t.replace(/^\d{1,3}[\.\uFF1E]\s*/, "");
+    // Regular digits with ) or -: "1) " "1- "
+    t = t.replace(/^\d{1,3}[\)\-\uFF1D]\s*/, "");
     // Arabic letter + dot: "A. "
     t = t.replace(/^[\u0621-\u064A]{1,3}\.\s+/, "");
     return t.trim();
   };
 
-  // detect option lines
+  // detect OPTION lines - ONLY digit+dash or letter+close-paren, NOT digit+dot (that is a question number)
   const isOptionLine = (s: string): boolean => {
     if (s.length > 100) return false;
     if (/[?]\s*$/.test(s) || /[\u061F]\s*$/.test(s)) return false;
-    // Arabic-Indic digits prefix: "1- " etc.
-    if (/^[\u0660-\u0669]{1,2}[\-\.\uFF1D\)]\s*/.test(s)) return true;
-    // Regular digits prefix: "1- " etc.
-    if (/^\d{1,2}[\-\.\uFF1D\)]\s*/.test(s)) return true;
-    // Arabic letter prefix
-    if (/^[\u0623\u0628\u062C\u062F\u0647\u0648\u0632\u062D\u0637\u064A\u0643\u0644\u0645\u0646\u0633\u0639\u0641\u0635\u0642\u0631\u0634\u062A\u062B\u062E\u0630\u0636\u0638\u063A]{1,2}[\)\.\uFF1A:]\s*/.test(s)) return true;
-    // English letter prefix
-    if (/^[A-Za-z]{1,2}[\)\.\uFF1A:]\s*/.test(s)) return true;
-    // analogy format: "word : word"
-    if (/^.{2,40}\s*[\:\uFF1A]\s*.{2,40}$/.test(s)) return true;
+    // Arabic-Indic digits + dash ONLY: "1- " (question numbers use "1. " which is NOT an option)
+    if (/^[\u0660-\u0669]{1,2}[\-\uFF1D]\s*/.test(s)) return true;
+    // Regular digits + dash ONLY: "1- "
+    if (/^\d{1,2}[\-\uFF1D]\s*/.test(s)) return true;
+    // Arabic letter + ) : "A) "
+    if (/^[\u0623\u0628\u062C\u062F\u0647\u0648\u0632\u062D\u0637\u064A\u0643\u0644\u0645\u0646\u0633\u0639\u0641\u0635\u0642\u0631\u0634\u062A\u062B\u062E\u0630\u0636\u0638\u063A][\)\uFF1A:]\s*/.test(s)) return true;
+    // English letter + ) : "A) "
+    if (/^[A-Za-z]{1,2}[\)\uFF1A:]\s*/.test(s)) return true;
+    // analogy format WITHOUT digit prefix: "word : word" like "honey: trade"
+    if (/^[\u0621-\u064A]{2,40}\s*[\:\uFF1A]\s*[\u0621-\u064A]{2,40}$/.test(s)) return true;
     return false;
   };
 
-  // extract option text (strip prefix)
+  // extract option text (strip prefix like "1- " or "A) ")
   const extractOptionText = (s: string): string => {
-    return s.replace(/^([\u0660-\u0669]{1,2}|\d{1,2}|[\u0621-\u064A]{1,3}|[A-Za-z]{1,2})[\-\.\)\uFF1D\uFF1A:]\s*/i, "").trim();
+    return s.replace(/^([\u0660-\u0669]{1,2}|\d{1,2}|[\u0621-\u064A]{1,3}|[A-Za-z]{1,2})[\-\)\uFF1D\uFF1A:]\s*/i, "").trim();
   };
 
   let i = 0;
@@ -121,7 +125,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
     const curClean = stripHL(cur);
     if (!curClean) { i++; continue; }
 
-    // ALWAYS look ahead for options first - any line followed by 2+ options is a question
+    // look ahead: collect option lines following this line
     const options: string[] = [];
     const correctAnswer: string[] = [];
     let j = i + 1;
@@ -147,7 +151,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
     const cleanTitle = stripSourceNumber(curClean);
 
-    // if 2+ options found, this line is a question (even if it starts with a digit like "1- question")
+    // if 2+ options found, this line is a QUESTION
     if (options.length >= 2) {
       questionNumber++;
 
@@ -168,13 +172,13 @@ export function parseDocText(raw: string): ParsedBlock[] {
       continue;
     }
 
-    // skip short section headers without question marks
-    if (cleanTitle.length < 30 && !/[\u061F?]/.test(cleanTitle)) {
+    // skip section headers (short lines without question marks) - like "1. section (1: 30/4): moon"
+    if (cleanTitle.length < 40 && !/[\u061F?]/.test(cleanTitle)) {
       i++;
       continue;
     }
 
-    // treat as short answer question
+    // long line without options - treat as short answer question
     questionNumber++;
     blocks.push({
       kind: "short",
@@ -187,6 +191,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
   return blocks;
 }
+
 
 
 
