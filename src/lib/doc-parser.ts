@@ -69,83 +69,87 @@ export function parseDocText(raw: string): ParsedBlock[] {
     .filter((l) => l.length > 0);
 
   const blocks: ParsedBlock[] = [];
-  let i = 0;
   const n = lines.length;
-  let questionNumber = 0;
 
   const hasHL = (s: string) => s.includes("[[HL]]");
   const stripHL = (s: string) =>
     s.replace(/\[\[HL\]\]/g, "").replace(/\[\[\/HL\]\]/g, "").trim();
 
-  // detect a numbered question like "1. text" "2) text" or Arabic-Indic
-  const detectQuestion = (s: string) => {
-    const m = s.match(/^(\d+)[\)\.]\s*(.+)/) ||
-              s.match(/^[\u0660-\u0669]{1,2}[\)\.]\s*(.+)/);
-    if (m) return { num: parseInt(m[1]) || 0, text: m[2].trim() };
+  // detect option lines: Arabic-Indic digits or regular digits or Arabic letters
+  const isOptionLine = (s: string): boolean => {
+    // Arabic-Indic digits followed by - or . or )
+    if (/^[\u0660-\u0669]{1,2}[\-\.\uFF1D\)]\s*/.test(s)) return true;
+    // Regular digits followed by - or . or )
+    if (/^\d{1,2}[\-\.\uFF1D\)]\s*/.test(s)) return true;
+    // Arabic letter prefixes like "Ø£) " etc.
+    if (/^[\u0623\u0628\u062C\u062F\u0647\u0648\u0632\u062D\u0637\u064A\u0643\u0644\u0645\u0646\u0633\u0639\u0641\u0635\u0642\u0631\u0634\u062A\u062B\u062E\u0630\u0636\u0638\u063A]{1,2}[\)\.\uFF1A:]\s*/.test(s)) return true;
+    // English letter prefixes
+    if (/^[A-Za-z]{1,2}[\)\.\uFF1A:]\s*/.test(s)) return true;
+    return false;
+  };
+
+  // extract option text (strip prefix)
+  const extractOptionText = (s: string): string => {
+    return s.replace(/^([\u0660-\u0669]{1,2}|\d{1,2}|[\u0621-\u064A]{1,3}|[A-Za-z]{1,2})[\-\.\)\uFF1D\uFF1A:]\s*/i, "").trim();
+  };
+
+  // detect standard numbered question like "1. text" "2) text"
+  const detectNumberedQuestion = (s: string) => {
+    const m = s.match(/^(\d+)[\)\.]\s*(.+)/);
+    if (m) return { num: parseInt(m[1]), text: m[2].trim() };
     return null;
   };
 
-  // detect an option like "A) text" "1. text" "\u0623) text" "\u0628) text" etc.
-  const detectOption = (s: string) => {
-    const m = s.match(/^([A-Za-z]{1,2}|\d{1,2}|[\u0621-\u064A]{1,3})[\)\.\uFF1A:]\s*(.+)/);
-    if (m) return { prefix: m[1], text: m[2].trim() };
-    return null;
-  };
+  let i = 0;
+  let questionNumber = 0;
 
-  // main parsing loop
   while (i < n) {
     const cur = lines[i];
     const curClean = stripHL(cur);
     if (!curClean) { i++; continue; }
 
-    const q = detectQuestion(curClean);
-    const isQuestionMark = /[\u061F?]/.test(curClean);
+    // skip orphaned option lines
+    if (isOptionLine(curClean)) {
+      i++;
+      continue;
+    }
 
-    // this is a question if it is numbered OR contains question mark
-    if (q || (isQuestionMark && curClean.length > 10)) {
-      questionNumber++;
-      const title = q ? q.text : curClean;
-      const options: string[] = [];
-      const correctAnswer: string[] = [];
+    // check for standard numbered question
+    const numberedQ = detectNumberedQuestion(curClean);
 
-      // collect following lines as options until next question
-      let j = i + 1;
-      while (j < n) {
-        const optRaw = lines[j];
-        const optClean = stripHL(optRaw);
-        if (!optClean) { j++; continue; }
+    // look ahead for options following this line
+    const options: string[] = [];
+    const correctAnswer: string[] = [];
+    let j = i + 1;
 
-        // stop if next line is a new question
-        const nextQ = detectQuestion(optClean);
-        if (nextQ) break;
+    while (j < n) {
+      const optRaw = lines[j];
+      const optClean = stripHL(optRaw);
+      if (!optClean) { j++; continue; }
 
-        // check if this looks like an option
-        const opt = detectOption(optClean);
-        if (opt && opt.text.length <= 100) {
-          // use option text only (strip prefix)
-          options.push(opt.text);
+      if (isOptionLine(optClean)) {
+        const optText = extractOptionText(optClean);
+        if (optText.length > 0 && optText.length <= 100) {
+          options.push(optText);
           if (hasHL(optRaw)) {
-            correctAnswer.push(opt.text);
+            correctAnswer.push(optText);
           }
-          j++;
-        } else if (optClean.length <= 60 && !/[\u061F?]/.test(optClean)) {
-          // short line without prefix - might be an option too
-          options.push(optClean);
-          if (hasHL(optRaw)) {
-            correctAnswer.push(optClean);
-          }
-          j++;
-        } else {
-          break;
         }
+        j++;
+      } else {
+        break;
       }
+    }
 
-      // use radio type if there are 2+ options
-      const kind = options.length >= 2 ? "radio" : "short";
+    // if 2+ options found, this is a multiple choice question
+    if (options.length >= 2) {
+      questionNumber++;
+      const title = numberedQ ? numberedQ.text : curClean;
+      const prefix = numberedQ ? numberedQ.num + ". " : questionNumber + ". ";
 
       blocks.push({
-        kind: kind,
-        title: (q ? q.num + ". " : questionNumber + ". ") + title,
+        kind: "radio",
+        title: prefix + title,
         options: options,
         correct: correctAnswer.length > 0 ? correctAnswer : undefined,
         required: true,
@@ -154,22 +158,26 @@ export function parseDocText(raw: string): ParsedBlock[] {
       continue;
     }
 
-    // analogy pattern "word: meaning"
-    const analogy = curClean.match(/^(\S{2,50})\s*[:\uFF1A]\s*(\S{2,50})$/);
-    if (analogy) {
+    // no options found - check if standard numbered question
+    if (numberedQ) {
       questionNumber++;
       blocks.push({
         kind: "short",
-        title: questionNumber + ". \u0623\u0643\u0645\u0644 \u0627\u0644\u0639\u0644\u0627\u0642\u0629: " + analogy[1] + " : \u061F",
+        title: numberedQ.num + ". " + numberedQ.text,
         options: [],
-        correct: [analogy[2]],
         required: true,
       });
       i++;
       continue;
     }
 
-    // standalone line
+    // not numbered, no options - might be section header, skip short lines
+    if (curClean.length < 50 && !/[\u061F?]/.test(curClean)) {
+      i++;
+      continue;
+    }
+
+    // treat as short answer question
     questionNumber++;
     blocks.push({
       kind: "short",
@@ -182,6 +190,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
   return blocks;
 }
+
 
 
 
