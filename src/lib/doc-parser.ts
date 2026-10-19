@@ -77,46 +77,62 @@ export function parseDocText(raw: string): ParsedBlock[] {
   const stripHL = (s: string) =>
     s.replace(/\[\[HL\]\]/g, "").replace(/\[\[\/HL\]\]/g, "").trim();
 
-  // strip option prefix like: "A) ", "1. ", "Ø£) " etc.
-  const stripOptionPrefix = (s: string): string =>
-    s.replace(/^([\u0621-\u064A]{1,3}|[A-Za-z]{1,2}|\d{1,2})[\)\.\uFF1A:]\s*/i, "").trim();
+  // detect a numbered question like "1. text" "2) text" or Arabic-Indic
+  const detectQuestion = (s: string) => {
+    const m = s.match(/^(\d+)[\)\.]\s*(.+)/) ||
+              s.match(/^[\u0660-\u0669]{1,2}[\)\.]\s*(.+)/);
+    if (m) return { num: parseInt(m[1]) || 0, text: m[2].trim() };
+    return null;
+  };
 
+  // detect an option like "A) text" "1. text" "\u0623) text" "\u0628) text" etc.
+  const detectOption = (s: string) => {
+    const m = s.match(/^([A-Za-z]{1,2}|\d{1,2}|[\u0621-\u064A]{1,3})[\)\.\uFF1A:]\s*(.+)/);
+    if (m) return { prefix: m[1], text: m[2].trim() };
+    return null;
+  };
+
+  // main parsing loop
   while (i < n) {
     const cur = lines[i];
     const curClean = stripHL(cur);
     if (!curClean) { i++; continue; }
 
-    // detect numbered question: "1. text" or "2) text" or Arabic-Indic "1. text"
-    const numberedQ =
-      curClean.match(/^(\d+)[\)\.]\s*(.+)/) ||
-      curClean.match(/^[\u0660-\u0669]{1,2}[\)\.]\s*(.+)/);
+    const q = detectQuestion(curClean);
     const isQuestionMark = /[\u061F?]/.test(curClean);
 
-    if (numberedQ || (isQuestionMark && curClean.length > 10)) {
+    // this is a question if it is numbered OR contains question mark
+    if (q || (isQuestionMark && curClean.length > 10)) {
       questionNumber++;
-      const rawTitle = numberedQ ? numberedQ[2].trim() : curClean;
-      const title = questionNumber + ". " + rawTitle;
+      const title = q ? q.text : curClean;
       const options: string[] = [];
       const correctAnswer: string[] = [];
 
-      // collect following short lines as options
+      // collect following lines as options until next question
       let j = i + 1;
       while (j < n) {
-        const optClean = stripHL(lines[j]);
+        const optRaw = lines[j];
+        const optClean = stripHL(optRaw);
         if (!optClean) { j++; continue; }
 
-        // detect if this is a new numbered question (stop collecting options)
-        const isNextQ = optClean.match(/^(\d+)[\)\.]\s*(.+)/);
-        const isShort = optClean.length <= 100 && !/[\u061F?]/.test(optClean);
+        // stop if next line is a new question
+        const nextQ = detectQuestion(optClean);
+        if (nextQ) break;
 
-        if (isShort && !isNextQ) {
-          // strip any existing option prefix like "A) " or "1. "
-          const optText = stripOptionPrefix(optClean);
-          if (optText.length > 0) {
-            options.push(optText);
-            if (hasHL(lines[j])) {
-              correctAnswer.push(optText);
-            }
+        // check if this looks like an option
+        const opt = detectOption(optClean);
+        if (opt && opt.text.length <= 100) {
+          // use option text only (strip prefix)
+          options.push(opt.text);
+          if (hasHL(optRaw)) {
+            correctAnswer.push(opt.text);
+          }
+          j++;
+        } else if (optClean.length <= 60 && !/[\u061F?]/.test(optClean)) {
+          // short line without prefix - might be an option too
+          options.push(optClean);
+          if (hasHL(optRaw)) {
+            correctAnswer.push(optClean);
           }
           j++;
         } else {
@@ -124,12 +140,12 @@ export function parseDocText(raw: string): ParsedBlock[] {
         }
       }
 
-      // always use radio type for questions with 2+ options
+      // use radio type if there are 2+ options
       const kind = options.length >= 2 ? "radio" : "short";
 
       blocks.push({
         kind: kind,
-        title: title,
+        title: (q ? q.num + ". " : questionNumber + ". ") + title,
         options: options,
         correct: correctAnswer.length > 0 ? correctAnswer : undefined,
         required: true,
@@ -138,9 +154,9 @@ export function parseDocText(raw: string): ParsedBlock[] {
       continue;
     }
 
-    // analogy pattern: "word: meaning"
+    // analogy pattern "word: meaning"
     const analogy = curClean.match(/^(\S{2,50})\s*[:\uFF1A]\s*(\S{2,50})$/);
-    if (analogy && !numberedQ) {
+    if (analogy) {
       questionNumber++;
       blocks.push({
         kind: "short",
@@ -153,7 +169,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
       continue;
     }
 
-    // standalone line - treat as short answer
+    // standalone line
     questionNumber++;
     blocks.push({
       kind: "short",
@@ -166,6 +182,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
   return blocks;
 }
+
 
 
 
