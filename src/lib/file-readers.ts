@@ -102,19 +102,21 @@ function loadPdfJs(): Promise<any> {
   if (pdfjsLib) return Promise.resolve(pdfjsLib);
   if (pdfjsLoading) return pdfjsLoading;
 
+  // إصدار UMD مستقر من pdf.js يدعم تحميله عبر <script> التقليدي بدون build step.
   const pdfjsUrl =
-    "https://unpkg.com/pdfjs-dist@4.8.69/build/pdf.min.js";
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.391/pdf.min.js";
   const workerUrl =
-    "https://unpkg.com/pdfjs-dist@4.8.69/build/pdf.worker.min.js";
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.391/pdf.worker.min.js";
 
   pdfjsLoading = new Promise((resolve, reject) => {
     const script = document.createElement("script");
     script.src = pdfjsUrl;
     script.onload = () => {
-      if ((window as any).pdfjsLib) {
-        (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
-        pdfjsLib = (window as any).pdfjsLib;
-        resolve(pdfjsLib);
+      const lib = (window as any).pdfjsLib ?? (window as any).pdfjsDist;
+      if (lib) {
+        lib.GlobalWorkerOptions.workerSrc = workerUrl;
+        pdfjsLib = lib;
+        resolve(lib);
       } else {
         reject(new Error("تم تحميل pdf.js لكنه لم يُعرّف بشكل صحيح."));
       }
@@ -136,6 +138,10 @@ async function readPdfFile(file: File): Promise<string> {
   });
   const pdf = await loadingTask.promise;
 
+  if (pdf.numPages === 0) {
+    throw new Error("الملف PDF فارغ أو لا يحتوي على صفحات.");
+  }
+
   const pages: string[] = [];
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
@@ -146,7 +152,13 @@ async function readPdfFile(file: File): Promise<string> {
     pages.push(text);
   }
 
-  return pages.join("\n");
+  const joined = pages.join("\n").trim();
+  if (joined.length === 0) {
+    throw new Error(
+      "لم يتم العثور على نص في ملف الـ PDF. قد يكون الملف ممسوحاً ضوئياً (صور فقط) — يرجى نسخ النص ولصقه مباشرة بدلاً من رفع الملف."
+    );
+  }
+  return joined;
 }
 
 /** قراءة أي ملف مدعوم وتُعيد نصه المستخرج. */

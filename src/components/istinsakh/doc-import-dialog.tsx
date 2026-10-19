@@ -83,7 +83,8 @@ export function DocImportDialog({
           toast.success(`تم استخراج ${parsed.length} سؤالاً — راجِعها في المعاينة أدناه.`);
         }
       } catch (err) {
-        toast.error("تعذّر تحليل الملف. تأكد من أنه نصي (.txt) وحاول من جديد.");
+        const msg = err instanceof Error ? err.message : "تعذّر تحليل الملف.";
+        toast.error(msg);
         console.error(err);
       } finally {
         setParsing(false);
