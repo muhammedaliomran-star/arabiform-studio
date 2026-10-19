@@ -8,6 +8,7 @@ import { Importer } from "@/components/istinsakh/importer";
 import { Editor } from "@/components/istinsakh/editor";
 import { Filler } from "@/components/istinsakh/filler";
 import { Responses, ResponsesToolbar } from "@/components/istinsakh/responses";
+import { DocImportDialog } from "@/components/istinsakh/doc-import-dialog";
 import { useFormsStore } from "@/hooks/use-forms-store";
 import { TEMPLATES, templateToForm } from "@/lib/form-templates";
 import type { Answer, FormDoc, Question, Store, FormResponse } from "@/lib/form-types";
@@ -44,6 +45,7 @@ function HomePage() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [docImportOpen, setDocImportOpen] = useState(false);
 
   // Light mode is the default for first-time visitors.
   useEffect(() => {
@@ -113,6 +115,31 @@ function HomePage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "تعذّر قراءة الملف.");
     }
+  };
+
+  const handleImportDoc = (questions: Question[]) => {
+    if (!questions.length) return;
+    if (active) {
+      // أضف الأسئلة المستوردة إلى نهاية النموذج النشط
+      updateActive({
+        questions: [...active.questions, ...questions],
+      });
+      toast.success(
+        `تمت إضافة ${questions.length} سؤالاً إلى "${active.title}"`,
+        { duration: 8000 },
+      );
+    } else {
+      // أنشئ نموذجاً جديداً من الأسئلة المستوردة
+      addForm({
+        id: uid(),
+        title: "مستورد من ملف",
+        description: "",
+        questions,
+        updatedAt: Date.now(),
+      });
+      toast.success(`تم إنشاء نموذج من ${questions.length} سؤالاً`);
+    }
+    setDocImportOpen(false);
   };
 
   const handleTemplate = (key: string) => {
@@ -221,10 +248,17 @@ function HomePage() {
           onImport={handleImport}
           onBlank={createBlank}
           onImportJson={handleImportJson}
+          onImportDoc={handleImportDoc}
           onTemplate={handleTemplate}
           loading={loading}
           error={error}
           compact={store.forms.length > 0}
+        />
+
+        <DocImportDialog
+          open={docImportOpen}
+          onOpenChange={setDocImportOpen}
+          onImport={handleImportDoc}
         />
 
         <div className="mt-8 grid gap-8 md:grid-cols-[240px_1fr]">
