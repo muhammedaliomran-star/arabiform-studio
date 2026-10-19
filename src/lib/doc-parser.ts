@@ -78,25 +78,31 @@ export function parseDocText(raw: string): ParsedBlock[] {
   // strip source numbering prefixes from question titles
   const stripSourceNumber = (s: string): string => {
     let t = s;
-    // "V.1 " "VI.2 " (Latin letter + dot + digits)
-    t = t.replace(/^[A-Za-z]{1,4}[\.\-]\d{1,3}[\)\.\-\:]\s*/i, "");
-    // Arabic letter + dot/dash + Arabic-Indic digits: "A.3 "
-    t = t.replace(/^[\u0621-\u064A]{1,3}[\.\-]\s*[\u0660-\u0669]{1,3}[\)\.\-\uFF1D]\s*/, "");
-    // Arabic-Indic digits + dot: "1. " (dot REQUIRED so "1 text" number-in-text is untouched)
+    // "V.1 " "VI.2 " "V.1: " (Latin letter + dot + digits + sep/space)
+    t = t.replace(/^[A-Za-z]{1,4}[\.\-]\d{1,3}[\)\.\-\:\s]\s*/i, "");
+    // Arabic letter + dot/dash + Arabic-Indic digits: "A.3 " "A.٣ "
+    t = t.replace(/^[\u0621-\u064A]{1,3}[\.\-]\s*[\u0660-\u0669]{1,3}[\)\.\-\uFF1D\s]\s*/, "");
+    // Arabic-Indic digits + dot: "1. "
     t = t.replace(/^[\u0660-\u0669]{1,3}[\.\uFF1E\u066B\u06D4]\s*/, "");
     // Regular digits + dot: "1. "
     t = t.replace(/^\d{1,3}[\.\uFF1E]\s*/, "");
+    // Arabic-Indic digits + space: "1 " (question numbering like "2 text")
+    t = t.replace(/^[\u0660-\u0669]{1,3}\s+/, "");
+    // Regular digits + space: "1 "
+    t = t.replace(/^\d{1,3}\s+/, "");
     // Arabic letter + dot/dash + space: "A. "
     t = t.replace(/^[\u0621-\u064A]{1,3}[\.\-]\s+/, "");
     return t.trim();
   };
 
-  // question-number line: "1." "1)" "1)" digit+dot/digit+) (NOT digit+dash)
+  // question-number line: digit+dot, digit+space+Arabic (question "2 text"), letter+dot+digits
   const isQuestionNumberLine = (s: string): boolean => {
-    if (/^[A-Za-z]{1,4}[\.\-]\d{1,3}[\)\.\-\:]/i.test(s)) return true;
-    if (/^[\u0621-\u064A]{1,3}[\.\-]\s*[\u0660-\u0669]{1,3}[\)\.\-\uFF1D]/.test(s)) return true;
+    if (/^[A-Za-z]{1,4}[\.\-]\d{1,3}[\)\.\-\:\s]/i.test(s)) return true;
+    if (/^[\u0621-\u064A]{1,3}[\.\-]\s*[\u0660-\u0669]{1,3}[\)\.\-\uFF1D\s]/.test(s)) return true;
     if (/^[\u0660-\u0669]{1,3}[\.\uFF1E\u066B\u06D4]/.test(s)) return true;
     if (/^\d{1,3}[\.\uFF1E]/.test(s)) return true;
+    // digit + space + Arabic letter: "2 murder" (question numbering, NOT option which is digit+tight)
+    if (/^(?:[\u0660-\u0669]{1,3}|\d{1,3})\s+[\u0621-\u064A]/.test(s)) return true;
     return false;
   };
 
@@ -107,22 +113,28 @@ export function parseDocText(raw: string): ParsedBlock[] {
   // extract option text: strip prefixes
   const extractOptionText = (s: string): string => {
     let t = s;
-    // Arabic-Indic digits + separator: "1- " "1. " "1) "
+    // Arabic-Indic digit + separator: "1- " "1. " "1) "
     t = t.replace(/^[\u0660-\u0669]{1,2}[\-\.\)\uFF1D\uFF1A:]\s*/, "");
-    // Regular digits + separator: "1- " "1. " "1) "
+    // Arabic-Indic digit + space: "1 "
+    t = t.replace(/^[\u0660-\u0669]{1,2}\s+/, "");
+    // Arabic-Indic digit tight + Arabic letter: "1murder" (no space)
+    t = t.replace(/^[\u0660-\u0669]{1,2}(?=[\u0621-\u064A])/, "");
+    // Regular digit + separator/space/tight
     t = t.replace(/^\d{1,2}[\-\.\)\uFF1D\uFF1A:]\s*/, "");
+    t = t.replace(/^\d{1,2}\s+/, "");
+    // Regular digit tight + Arabic letter: "1murder" (no space)
+    t = t.replace(/^\d{1,2}(?=[\u0621-\u064A])/, "");
     // Arabic single letter + paren/colon: "A) " "A: "
     t = t.replace(/^[\u0621-\u064A][\)\uFF1A:]\s*/, "");
-    // Arabic 2-letter prefix + paren/colon: "Aa) " (rare)
-    t = t.replace(/^[\u0621-\u064A]{2}[\)\uFF1A:]\s+(?=[\u0621-\u064A])/, "");
     // English letter + paren/colon: "A) " "A: "
     t = t.replace(/^[A-Za-z]{1,2}[\)\uFF1A:]\s*/, "");
     return t.trim();
   };
 
-  // detect option prefix pattern (digit or letter at start)
+  // detect option prefix: digit+separator, digit+tight-Arabic, letter+paren (NOT digit+space = question)
   const hasOptionPrefix = (s: string): boolean =>
     /^(?:[\u0660-\u0669]{1,2}|\d{1,2})[\-\.\)\uFF1D\uFF1A:]\s*\S/.test(s) ||
+    /^(?:[\u0660-\u0669]{1,2}|\d{1,2})(?=[\u0621-\u064A])/.test(s) ||
     /^(?:[\u0621-\u064A]{1,2}|[A-Za-z]{1,2})[\)\uFF1A:]\s*\S/.test(s);
 
   let i = 0;
@@ -149,7 +161,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
       const optClean = stripHL(optRaw);
       if (!optClean) { j++; continue; }
 
-      // stop at next question number line or section header
+      // stop at next question (digit+dot, digit+space, section header)
       if (isQuestionNumberLine(optClean) || isSectionHeader(optClean)) break;
       if (optClean.length > 80) break;
       if (/[?\u061F]\s*$/.test(optClean)) break;
@@ -168,7 +180,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
         if (prefixed) prefixedCount++;
       }
       j++;
-      if (options.length >= 10) break;
+      if (options.length >= 4) break;  // standard MCQ count
     }
 
     // if 2+ options found, this line is a QUESTION
@@ -204,6 +216,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
   return blocks;
 }
+
 
 
 
