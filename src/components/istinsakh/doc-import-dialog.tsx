@@ -218,9 +218,9 @@ export function DocImportDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[calc(100vw-1rem)] sm:w-full max-w-4xl max-h-[90dvh] sm:max-h-[85vh] flex flex-col gap-0 overflow-hidden p-4 sm:p-6">
+      <DialogContent className="w-[calc(100vw-1rem)] sm:w-[calc(100vw-2rem)] max-w-4xl h-[92dvh] sm:h-[85dvh] flex flex-col gap-0 overflow-hidden p-4 sm:p-6">
         <DialogClose />
-        <DialogHeader>
+        <DialogHeader className="shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <FileText className="h-5 w-5 text-primary" aria-hidden />
             استيراد أسئلة من ملف / نص
@@ -475,9 +475,9 @@ export function DocImportDialog({
         </DialogFooter>
         {/* نافذة معاينة كاملة للنص المستخرج */}
         <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-          <DialogContent className="w-[calc(100vw-1rem)] sm:w-full max-w-2xl max-h-[90dvh] sm:max-h-[80vh] p-4 sm:p-6 flex flex-col gap-0 overflow-hidden">
+          <DialogContent className="w-[calc(100vw-1rem)] sm:w-[calc(100vw-2rem)] max-w-2xl h-[90dvh] sm:h-[80dvh] p-4 sm:p-6 flex flex-col gap-0 overflow-hidden">
             <DialogClose />
-            <DialogHeader>
+            <DialogHeader className="shrink-0">
               <DialogTitle className="flex items-center gap-2">
                 <Eye className="h-5 w-5 text-primary" aria-hidden />
                 معاينة النص المستخرج
