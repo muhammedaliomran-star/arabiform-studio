@@ -75,13 +75,26 @@ export function parseDocText(raw: string): ParsedBlock[] {
   const stripHL = (s: string) =>
     s.replace(/\[\[HL\]\]/g, "").replace(/\[\[\/HL\]\]/g, "").trim();
 
+  // strip source numbering prefixes from titles: "V.1 ", "9. ", "9) ", Arabic-Indic "9. ", etc.
+  const stripSourceNumber = (s: string): string => {
+    return s
+      // Latin letter + dot + digits: "V.1 ", "VI.2 "
+      .replace(/^[A-Za-z]{1,4}[\.\-]\d{1,3}[\)\.\-\:]\s*/i, "")
+      // Arabic-Indic digits: "9. " "9) " "9- "
+      .replace(/^[\u0660-\u0669]{1,3}[\)\.\-\uFF1D]\s*/, "")
+      // Regular digits: "9. " "9) " "9- "
+      .replace(/^\d{1,3}[\)\.\-\uFF1D]\s*/, "")
+      // Arabic letters as prefixes: "a) " style Arabic "alef) "
+      .trim();
+  };
+
   // detect option lines: Arabic-Indic digits or regular digits or Arabic letters
   const isOptionLine = (s: string): boolean => {
     // Arabic-Indic digits followed by - or . or )
     if (/^[\u0660-\u0669]{1,2}[\-\.\uFF1D\)]\s*/.test(s)) return true;
     // Regular digits followed by - or . or )
     if (/^\d{1,2}[\-\.\uFF1D\)]\s*/.test(s)) return true;
-    // Arabic letter prefixes like "Ø£) " etc.
+    // Arabic letter prefixes like alef) beh) etc.
     if (/^[\u0623\u0628\u062C\u062F\u0647\u0648\u0632\u062D\u0637\u064A\u0643\u0644\u0645\u0646\u0633\u0639\u0641\u0635\u0642\u0631\u0634\u062A\u062B\u062E\u0630\u0636\u0638\u063A]{1,2}[\)\.\uFF1A:]\s*/.test(s)) return true;
     // English letter prefixes
     if (/^[A-Za-z]{1,2}[\)\.\uFF1A:]\s*/.test(s)) return true;
@@ -91,13 +104,6 @@ export function parseDocText(raw: string): ParsedBlock[] {
   // extract option text (strip prefix)
   const extractOptionText = (s: string): string => {
     return s.replace(/^([\u0660-\u0669]{1,2}|\d{1,2}|[\u0621-\u064A]{1,3}|[A-Za-z]{1,2})[\-\.\)\uFF1D\uFF1A:]\s*/i, "").trim();
-  };
-
-  // detect standard numbered question like "1. text" "2) text"
-  const detectNumberedQuestion = (s: string) => {
-    const m = s.match(/^(\d+)[\)\.]\s*(.+)/);
-    if (m) return { num: parseInt(m[1]), text: m[2].trim() };
-    return null;
   };
 
   let i = 0;
@@ -113,9 +119,6 @@ export function parseDocText(raw: string): ParsedBlock[] {
       i++;
       continue;
     }
-
-    // check for standard numbered question
-    const numberedQ = detectNumberedQuestion(curClean);
 
     // look ahead for options following this line
     const options: string[] = [];
@@ -141,15 +144,16 @@ export function parseDocText(raw: string): ParsedBlock[] {
       }
     }
 
+    // strip source numbering from the question title
+    const cleanTitle = stripSourceNumber(curClean);
+
     // if 2+ options found, this is a multiple choice question
     if (options.length >= 2) {
       questionNumber++;
-      const title = numberedQ ? numberedQ.text : curClean;
-      const prefix = numberedQ ? numberedQ.num + ". " : questionNumber + ". ";
 
       blocks.push({
         kind: "radio",
-        title: prefix + title,
+        title: questionNumber + ". " + cleanTitle,
         options: options,
         correct: correctAnswer.length > 0 ? correctAnswer : undefined,
         required: true,
@@ -158,30 +162,17 @@ export function parseDocText(raw: string): ParsedBlock[] {
       continue;
     }
 
-    // no options found - check if standard numbered question
-    if (numberedQ) {
-      questionNumber++;
-      blocks.push({
-        kind: "short",
-        title: numberedQ.num + ". " + numberedQ.text,
-        options: [],
-        required: true,
-      });
+    // no options found - skip short section headers without question marks
+    if (cleanTitle.length < 30 && !/[\u061F?]/.test(cleanTitle)) {
       i++;
       continue;
     }
 
-    // not numbered, no options - might be section header, skip short lines
-    if (curClean.length < 50 && !/[\u061F?]/.test(curClean)) {
-      i++;
-      continue;
-    }
-
-    // treat as short answer question
+    // treat as short answer question with sequential number
     questionNumber++;
     blocks.push({
       kind: "short",
-      title: questionNumber + ". " + curClean,
+      title: questionNumber + ". " + cleanTitle,
       options: [],
       required: true,
     });
@@ -190,6 +181,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
   return blocks;
 }
+
 
 
 
