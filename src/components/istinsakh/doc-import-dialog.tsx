@@ -50,6 +50,7 @@ export function DocImportDialog({
 }: DocImportDialogProps) {
   const [text, setText] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [rawExtractedText, setRawExtractedText] = useState("");
   const [blocks, setBlocks] = useState<ParsedBlock[]>([]);
   const [parsing, setParsing] = useState(false);
   const [pdfLoading, setPdfLoading] = useState(false);
@@ -73,6 +74,7 @@ export function DocImportDialog({
           }
           raw = await readFileContent(source);
           setFile(source);
+          setRawExtractedText(raw);
         }
         const parsed = parseDocText(raw);
         setBlocks(parsed);
@@ -284,6 +286,34 @@ export function DocImportDialog({
               </button>
             </div>
           </section>
+
+          {/* معاينة النص المستخرج من الملف */}
+          {rawExtractedText && (
+            <section className="surface-card p-0 rounded-xl border border-border overflow-hidden mb-3">
+              <div className="p-4 border-b border-border flex items-center justify-between bg-surface/50">
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-muted-foreground" aria-hidden />
+                  <span className="font-semibold">معاينة النص المستخرج من الملف</span>
+                </div>
+                {file && (
+                  <span className="text-xs text-muted-foreground">
+                    {file.name} ({Math.round(file.size / 1024)} ك.ب)
+                  </span>
+                )}
+              </div>
+              <div className="p-4">
+                <textarea
+                  value={rawExtractedText}
+                  readOnly
+                  rows={6}
+                  className="rounded-xl border border-input bg-surface px-3 py-2 text-sm outline-none w-full font-mono text-sm"
+                />
+                <p className="mt-2 text-xs text-muted-foreground">
+                  هذا النص المستخرج مباشرة من الملف. يتم تقسيمه تلقائياً إلى أسئلة أدناه — يمكنك تعديل كل سؤال قبل الاستيراد.
+                </p>
+              </div>
+            </section>
+          )}
 
           {/* معاينة الأسئلة */}
           {blocks.length > 0 && (
