@@ -102,23 +102,32 @@ async function readDocxFile(file: File): Promise<string> {
 
   // تقسيم حسب الفقرات <w:p ...> أو <w:p> أولاً، ثم استخراج النصوص داخل كل فقرة.
   // هذا يحافظ على حدود الأسطر/الفقرات بدل دمج كل شيء في سطر واحد.
-  const paragraphs = xml.split(/<w:p[\s>]/);
+    const paragraphs = xml.split(/<w:p[\s>]/);
   const lines: string[] = [];
   for (let i = 1; i < paragraphs.length; i++) {
     const para = paragraphs[i];
     const paraEnd = para.indexOf("</w:p>");
     const paraContent = paraEnd >= 0 ? para.slice(0, paraEnd) : para;
-    // استخراج النصوص من الوسوم <w:t ...>...</w:t>
-    const runs: string[] = [];
-    const runRe = /<w:t[^>]*>([^<]*)<\/w:t>/g;
-    let m: RegExpExecArray | null;
-    while ((m = runRe.exec(paraContent)) !== null) {
-      runs.push(decodeXml(m[1]));
+
+    const parts: string[] = [];
+    const runRe = /<w:r>([\s\S]*?)<\/w:r>/g;
+    let rm: RegExpExecArray | null;
+    while ((rm = runRe.exec(paraContent)) !== null) {
+      const runContent = rm[1];
+      const isHighlighted = /<w:highlight[^>]*w:val="yellow"/i.test(runContent);
+      const tMatch = runContent.match(/<w:t[^>]*>([^<]*)<\/w:t>/);
+      const text = tMatch ? decodeXml(tMatch[1]) : "";
+      if (text.length === 0) continue;
+      if (isHighlighted) {
+        parts.push("[[HL]]" + text + "[[/HL]]");
+      } else {
+        parts.push(text);
+      }
     }
-    const line = runs.join("").trim();
+
+    const line = parts.join("").trim();
     lines.push(line);
-  }
-  const joined = lines.join("\n");
+  }  const joined = lines.join("\n");
   return joined.trim().length > 0 ? joined : xml.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 }
 
@@ -614,4 +623,5 @@ export function conversionHint(file: File): string {
   }
   return `نوع الملف "${ext}" غير مدعوم للاستيراد النصي.`;
 }
+
 

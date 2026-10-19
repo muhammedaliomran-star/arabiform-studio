@@ -60,85 +60,86 @@ const NUMBERED_RE = /^([٠-٩0-9]{1,2}[\)\.]|\u0627|ب|ج|د|هـ|و|ز|ح|ط|ي
 
 /** تحليل النص المستخرج من ملف وورد/بي دي إف/لصق */
 export function parseDocText(raw: string): ParsedBlock[] {
-  // تحويل الأف-tab والرأسية إلى أسطر عادية
   const lines = raw
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
     .replace(/\u000B/g, "\n")
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => l.length > 0 && l !== "لا توجد أسئلة بعد");
+    .filter((l) => l.length > 0);
 
   const blocks: ParsedBlock[] = [];
   let i = 0;
   const n = lines.length;
 
-  while (i < n) {
-    const cur = normalizeArabic(lines[i]);
-    if (!cur) { i++; continue; }
+  const hasHL = (s: string) => s.includes("[[HL]]");
+  const stripHL = (s: string) =>
+    s.replace(/\[\[HL\]\]/g, "").replace(/\[\[\/HL\]\]/g, "").trim();
 
-    /*─────────────────────────────
-      1. زوج شبيه "كلمة : معنى"
-      يُنجز كل pair كسؤال إجابة قصيرة (العنوان = الزوج، الإجابة المقترحة = الجزء الثاني)
-     ─────────────────────────────*/
-    const analogy = cur.match(ANALOGY_RE);
-    if (analogy && !isLikelyQuestion(cur)) {
-      const a = normalizeArabic(analogy[1]);
-      const b = normalizeArabic(analogy[2]);
-      // لا نتعامل كزوج شبيه إذا كان الجزء الثاني طويلاً (ليست خياراً قصيراً)
-      if (b.length <= 40) {
-        blocks.push({
-          kind: "short",
-          title: `أكمل العلاقة: ${a} : ؟`,
-          options: [],
-          correct: b ? [b] : undefined,
-          required: true,
-        });
-        i++;
-        continue;
+  while (i < n) {
+    const cur = lines[i];
+    const curClean = stripHL(cur);
+    if (!curClean) { i++; continue; }
+
+    const numberedQ =
+      curClean.match(/^(\d+)[\)\.]\s*(.+)/) ||
+      curClean.match(/^[\u0660-\u0669]{1,2}[\)\.]\s*(.+)/);
+    const isQuestionMark = /[\u061F?]/.test(curClean);
+
+    if (numberedQ || (isQuestionMark && curClean.length > 10)) {
+      const title = numberedQ ? numberedQ[2].trim() : curClean;
+      const options: string[] = [];
+      let correctAnswer: string[] = [];
+
+      let j = i + 1;
+      while (j < n) {
+        const optClean = stripHL(lines[j]);
+        if (!optClean) { j++; continue; }
+
+        const optNumbered =
+          optClean.match(/^([\u0621-\u064A]|[A-Za-z]\d*|\d+)[\)\.]\s*(.+)/);
+        const isShort = optClean.length <= 100 && !/[\u061F?]/.test(optClean);
+        const isNextQ = optClean.match(/^(\d+)[\)\.]\s*(.+)/);
+
+        if (isShort && !isNextQ) {
+          const optText = optNumbered ? optNumbered[2].trim() : optClean;
+          options.push(optText);
+          if (hasHL(lines[j])) {
+            correctAnswer.push(optText);
+          }
+          j++;
+        } else {
+          break;
+        }
       }
+
+      blocks.push({
+        kind: options.length >= 2 ? "radio" : "short",
+        title: title,
+        options: options,
+        correct: correctAnswer.length > 0 ? correctAnswer : undefined,
+        required: true,
+      });
+      i = j;
+      continue;
     }
 
-    /*─────────────────────────────
-      2. سؤال طويل يتبعه أسطر قصيرة = اختيارات
-     ─────────────────────────────*/
-    if (isLikelyQuestion(cur) || cur.length > 40) {
-      const title = cur;
-      const options: string[] = [];
-      let j = i + 1;
-      // جمّع الأسطر القصيرة التالية كخيرات
-      while (j < n && isShortOption(lines[j]) && options.length < 6) {
-        const opt = normalizeArabic(lines[j]);
-        if (opt.length > 0) options.push(opt);
-        j++;
-      }
-      if (options.length >= 2) {
-        blocks.push({
-          kind: "radio",
-          title,
-          options,
-          required: true,
-        });
-        i = j;
-        continue;
-      }
-      // لا توجد اختيارات → سؤال إجابة قصيرة
+    const analogy = curClean.match(/^(\S{2,50})\s*[:\uFF1A]\s*(\S{2,50})$/);
+    if (analogy && !numberedQ) {
       blocks.push({
         kind: "short",
-        title,
+        title: "\u0623\u0643\u0645\u0644 \u0627\u0644\u0639\u0644\u0627\u0642\u0629: " + analogy[1] + " : \u061F",
         options: [],
+        correct: [analogy[2]],
         required: true,
       });
       i++;
       continue;
     }
 
-    /*─────────────────────────────
-      3. سطر قصير منفرد (قد يكون خياراً لمركبة سابقة أو سؤال مكتمل)
-     ─────────────────────────────*/
     blocks.push({
       kind: "short",
-      title: cur,
+      title: curClean,
       options: [],
       required: true,
     });
@@ -147,6 +148,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
   return blocks;
 }
+
 
 /** تحويل كتل المحلّل إلى أسئلة من النوع المستخدم في التطبيق */
 export function blocksToQuestions(
