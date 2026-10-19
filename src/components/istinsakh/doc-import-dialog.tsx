@@ -22,6 +22,8 @@ import {
   CheckCircle2,
   AlertTriangle,
   LayoutList,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { Question } from "@/lib/form-types";
@@ -51,6 +53,7 @@ export function DocImportDialog({
   const [text, setText] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [rawExtractedText, setRawExtractedText] = useState("");
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [blocks, setBlocks] = useState<ParsedBlock[]>([]);
   const [parsing, setParsing] = useState(false);
   const [pdfLoading, setPdfLoading] = useState(false);
@@ -295,11 +298,20 @@ export function DocImportDialog({
                   <FileText className="h-4 w-4 text-muted-foreground" aria-hidden />
                   <span className="font-semibold">معاينة النص المستخرج من الملف</span>
                 </div>
-                {file && (
-                  <span className="text-xs text-muted-foreground">
-                    {file.name} ({Math.round(file.size / 1024)} ك.ب)
-                  </span>
-                )}
+                <div className="flex items-center gap-1">
+                  {file && (
+                    <span className="text-xs text-muted-foreground">
+                      {file.name} ({Math.round(file.size / 1024)} ك.ب)
+                    </span>
+                  )}
+                  <button
+                    onClick={() => setPreviewOpen(true)}
+                    className="rounded border border-input bg-surface px-2 py-1.5 text-xs hover:bg-secondary transition"
+                    title="افتح معاينة كاملة"
+                  >
+                    <Eye className="h-3.5 w-3.5" aria-hidden />
+                  </button>
+                </div>
               </div>
               <div className="p-4">
                 <textarea
@@ -459,7 +471,36 @@ export function DocImportDialog({
             {parsing ? "جاري…" : "تأكيد واستيراد إلى النموذج"}
           </Button>
         </DialogFooter>
+        {/* نافذة معاينة كاملة للنص المستخرج */}
+        <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+          <DialogContent className="max-w-2xl max-h-[80vh] p-6">
+            <DialogClose />
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Eye className="h-5 w-5 text-primary" aria-hidden />
+                معاينة النص المستخرج
+              </DialogTitle>
+              <DialogDescription>
+                {file ? (
+                  <span className="text-sm text-muted-foreground">
+                    {file.name} ({Math.round(file.size / 1024)} ك.ب)
+                  </span>
+                ) : null}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="mt-4 flex-1 overflow-auto bg-surface p-4 rounded-xl border border-border font-mono text-sm leading-relaxed max-h-[60vh]">
+              {rawExtractedText}
+            </div>
+            <DialogFooter className="mt-4">
+              <Button onClick={() => setPreviewOpen(false)} className="ml-auto">
+                إغلاق
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
       </DialogContent>
     </Dialog>
   );
 }
+
