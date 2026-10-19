@@ -75,29 +75,36 @@ export function parseDocText(raw: string): ParsedBlock[] {
   const stripHL = (s: string) =>
     s.replace(/\[\[HL\]\]/g, "").replace(/\[\[\/HL\]\]/g, "").trim();
 
-  // strip source numbering prefixes from titles: "V.1 ", "9. ", "9) ", Arabic-Indic "9. ", etc.
+  // strip source numbering prefixes from titles
   const stripSourceNumber = (s: string): string => {
-    return s
-      // Latin letter + dot + digits: "V.1 ", "VI.2 "
-      .replace(/^[A-Za-z]{1,4}[\.\-]\d{1,3}[\)\.\-\:]\s*/i, "")
-      // Arabic-Indic digits: "9. " "9) " "9- "
-      .replace(/^[\u0660-\u0669]{1,3}[\)\.\-\uFF1D]\s*/, "")
-      // Regular digits: "9. " "9) " "9- "
-      .replace(/^\d{1,3}[\)\.\-\uFF1D]\s*/, "")
-      // Arabic letters as prefixes: "a) " style Arabic "alef) "
-      .trim();
+    let t = s;
+    // Latin letter + dot/dash + digits: "V.1 ", "VI.2 "
+    t = t.replace(/^[A-Za-z]{1,4}[\.\-]\d{1,3}[\)\.\-\:]\s*/i, "");
+    // Arabic letter + dot + digits: "A.3 " "A.4 " (alef-dot-digit)
+    t = t.replace(/^[\u0621-\u064A]{1,3}\.\s*[\u0660-\u0669]{1,3}[\)\.\-\uFF1D]\s*/, "");
+    // Arabic-Indic digits: "9. " "9) " "9- "
+    t = t.replace(/^[\u0660-\u0669]{1,3}[\)\.\-\uFF1D]\s*/, "");
+    // Regular digits: "9. " "9) " "9- "
+    t = t.replace(/^\d{1,3}[\)\.\-\uFF1D]\s*/, "");
+    // Arabic letter alone with dot: "A. " (alef-dot-space)
+    t = t.replace(/^[\u0621-\u064A]{1,3}\.\s+/, "");
+    return t.trim();
   };
 
-  // detect option lines: Arabic-Indic digits or regular digits or Arabic letters
+  // detect option lines
   const isOptionLine = (s: string): boolean => {
-    // Arabic-Indic digits followed by - or . or )
+    if (s.length > 100) return false;
+    if (/[?]\s*$/.test(s) || /[\u061F]\s*$/.test(s)) return false;
+    // Arabic-Indic digits prefix: "1- " etc.
     if (/^[\u0660-\u0669]{1,2}[\-\.\uFF1D\)]\s*/.test(s)) return true;
-    // Regular digits followed by - or . or )
+    // Regular digits prefix: "1- " etc.
     if (/^\d{1,2}[\-\.\uFF1D\)]\s*/.test(s)) return true;
-    // Arabic letter prefixes like alef) beh) etc.
+    // Arabic letter prefix: "A) " etc.
     if (/^[\u0623\u0628\u062C\u062F\u0647\u0648\u0632\u062D\u0637\u064A\u0643\u0644\u0645\u0646\u0633\u0639\u0641\u0635\u0642\u0631\u0634\u062A\u062B\u062E\u0630\u0636\u0638\u063A]{1,2}[\)\.\uFF1A:]\s*/.test(s)) return true;
-    // English letter prefixes
+    // English letter prefix: "A) " etc.
     if (/^[A-Za-z]{1,2}[\)\.\uFF1A:]\s*/.test(s)) return true;
+    // analogy format: "word : word" (like "honey: trade")
+    if (/^.{2,40}\s*[\:\uFF1A]\s*.{2,40}$/.test(s)) return true;
     return false;
   };
 
@@ -119,6 +126,9 @@ export function parseDocText(raw: string): ParsedBlock[] {
       i++;
       continue;
     }
+
+    // strip source numbering from the question title
+    const cleanTitle = stripSourceNumber(curClean);
 
     // look ahead for options following this line
     const options: string[] = [];
@@ -143,9 +153,6 @@ export function parseDocText(raw: string): ParsedBlock[] {
         break;
       }
     }
-
-    // strip source numbering from the question title
-    const cleanTitle = stripSourceNumber(curClean);
 
     // if 2+ options found, this is a multiple choice question
     if (options.length >= 2) {
@@ -181,6 +188,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
   return blocks;
 }
+
 
 
 
