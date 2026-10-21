@@ -346,7 +346,7 @@ async function parseToUnicodeCMap(
   // فك ضغط التيار إذا كان مضغوطاً
   const dictLower = dictText.toLowerCase();
   const isFlate = /\/filter\s*\/flatdecode/.test(dictLower) || /\/filter\s*\[\s*\/flatdecode/.test(dictLower);
-  let streamBytes: Uint8Array;
+  let streamBytes: Uint8Array<ArrayBuffer>;
 
   const dictContent = new TextDecoder("utf-8", { fatal: false }).decode(toUnicodeObj.bytes);
   const streamStart = indexOfBytes(toUnicodeObj.bytes, STREAM_MARKER);
