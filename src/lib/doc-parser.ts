@@ -64,6 +64,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
     .replace(/\u000B/g, "\n")
+    .replace(/\u0640/g, "") // tatweel: "هـ" → "ه" لتوحيد بادئات الخيارات
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
