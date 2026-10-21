@@ -111,6 +111,9 @@ export function parseDocText(raw: string): ParsedBlock[] {
   const isSectionHeader = (s: string): boolean =>
     /^(?:\u0642\u0633\u0645|\u0627\u0644\u0641\u0635\u0644|\u0627\u0644\u0648\u062d\u062f\u0629|\u0627\u0644\u062f\u0631\u0633|\u0627\u0644\u0628\u0627\u0628)[\s(\u0600-\u06FF]/.test(s);
 
+  /** أحرف الخيارات العربية الشائعة: أ إ آ ا ب ج د ه */
+  const AR_OPTION_LETTER = "[\u0623\u0625\u0622\u0627\u0628\u062C\u062F\u0647]";
+
   // extract option text: strip prefixes
   const extractOptionText = (s: string): string => {
     let t = s;
@@ -125,18 +128,26 @@ export function parseDocText(raw: string): ParsedBlock[] {
     t = t.replace(/^\d{1,2}\s+/, "");
     // Regular digit tight + Arabic letter: "1murder" (no space)
     t = t.replace(/^\d{1,2}(?=[\u0621-\u064A])/, "");
-    // Arabic single letter + paren/colon: "A) " "A: "
-    t = t.replace(/^[\u0621-\u064A][\)\uFF1A:]\s*/, "");
-    // English letter + paren/colon: "A) " "A: "
-    t = t.replace(/^[A-Za-z]{1,2}[\)\uFF1A:]\s*/, "");
+    // Arabic single letter + paren/dot/colon: "أ) " "أ. " "أ: "
+    t = t.replace(/^[\u0621-\u064A][\)\.\uFF1A:]\s*/, "");
+    // Arabic option letter + bare space: "أ الرياح"
+    t = t.replace(new RegExp("^" + AR_OPTION_LETTER + "\\s+"), "");
+    // English letter + paren/dot/colon: "A) " "A. " "A: "
+    t = t.replace(/^[A-Za-z]{1,2}[\)\.\uFF1A:]\s*/, "");
+    // English option letter + bare space: "A murder"
+    t = t.replace(/^[A-Da-d]\s+/, "");
     return t.trim();
   };
 
-  // detect option prefix: digit+separator, digit+tight-Arabic, letter+paren (NOT digit+space = question)
+  // detect option prefix: digit+separator, digit+tight-Arabic, letter+paren/dot/colon,
+  // letter+bare-space (أ الرياح) — (NOT digit+space = question numbering)
   const hasOptionPrefix = (s: string): boolean =>
     /^(?:[\u0660-\u0669]{1,2}|\d{1,2})[\-\.\)\uFF1D\uFF1A:]\s*\S/.test(s) ||
     /^(?:[\u0660-\u0669]{1,2}|\d{1,2})(?=[\u0621-\u064A])/.test(s) ||
-    /^(?:[\u0621-\u064A]{1,2}|[A-Za-z]{1,2})[\)\uFF1A:]\s*\S/.test(s);
+    /^[\u0621-\u064A][\)\.\uFF1A:]\s*\S/.test(s) ||
+    new RegExp("^" + AR_OPTION_LETTER + "\\s+(?=\\S)").test(s) ||
+    /^(?:[\u0621-\u064A]{1,2}|[A-Za-z]{1,2})[\)\uFF1A:]\s*\S/.test(s) ||
+    /^[A-Da-d]\s+(?=\S)/.test(s);
 
   let i = 0;
   let questionNumber = 0;
