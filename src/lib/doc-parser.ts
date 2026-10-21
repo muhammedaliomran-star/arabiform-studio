@@ -152,6 +152,28 @@ export function parseDocText(raw: string): ParsedBlock[] {
   let i = 0;
   let questionNumber = 0;
 
+  /**
+   * فصل خيار (أ) الملتحم بنهاية سطر السؤال — شائع في أسئلة التناظر اللفظي:
+   * "القلم : كتابة أ الورق" → العنوان "القلم : كتابة" + خيار "الورق".
+   * يشترط أن يبقى قبل الحرف جزء كافٍ من السؤال، وأن يبدأ الذيل بكلمة.
+   */
+  const splitTitleOption = (
+    s: string,
+  ): { before: string; option: string | null; highlighted: boolean } => {
+    const re = new RegExp(
+      "(?:^|\\s)(" + AR_OPTION_LETTER + "|[A-Da-d])[\\)\\.\uFF1A:]?\\s+([^:]{1,60})$",
+    );
+    const m = s.match(re);
+    if (!m || m.index === undefined) return { before: s, option: null, highlighted: false };
+    const before = s.slice(0, m.index).trim();
+    const tailClean = stripHL(m[2]).trim();
+    if (before.length < 5 || tailClean.length === 0) return { before: s, option: null, highlighted: false };
+    // الذيل يجب أن يبدأ بكلمة حقيقية (لا علامة ترقيم)
+    if (!/^[\u0621-\u064A0-9A-Za-z]/.test(tailClean)) return { before: s, option: null, highlighted: false };
+    const highlighted = m[2].includes("[[HL]]");
+    return { before: stripHL(before), option: tailClean, highlighted };
+  };
+
   while (i < n) {
     const cur = lines[i];
     const curClean = stripHL(cur);
