@@ -220,9 +220,17 @@ export function parseDocText(raw: string): ParsedBlock[] {
     // if 2+ options found, this line is a QUESTION
     if (options.length >= 2) {
       questionNumber++;
+      // فصل خيار (أ) الملتحم بنهاية سطر السؤال (تناظر لفظي) — يبقى التناظر في العنوان
+      const split = splitTitleOption(curClean);
+      let title = cleanTitle;
+      if (split.option) {
+        title = stripSourceNumber(split.before);
+        options.unshift(split.option);
+        if (split.highlighted) correctAnswer.unshift(split.option);
+      }
       blocks.push({
         kind: "radio",
-        title: questionNumber + ". " + cleanTitle,
+        title: questionNumber + ". " + title,
         options: options,
         correct: correctAnswer.length > 0 ? correctAnswer : undefined,
         required: true,
