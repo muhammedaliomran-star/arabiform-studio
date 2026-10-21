@@ -45,7 +45,7 @@ const parseZipLocalHeader = (
 };
 
 /** فك ضغط تدفق مضغوط بـ Flate/deflate باستخدام DecompressionStream المدمج في المتصفح. */
-async function inflateFlate(data: Uint8Array): Promise<Uint8Array> {
+async function inflateFlate(data: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
   const blob = new Blob([data]);
   const stream = blob.stream().pipeThrough(new DecompressionStream("deflate-raw"));
   const buf = await new Response(stream).arrayBuffer();
