@@ -162,7 +162,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
     s: string,
   ): { before: string; option: string | null; highlighted: boolean } => {
     const re = new RegExp(
-      "(?:^|\\s)(?:\\[\\[\\/HL\\]\\])? ?(" + AR_OPTION_LETTER + "|[A-Da-d])(?:\\[\\[\\/HL\\]\\])? ?[\\)\\.\uFF1A:]?\\s*(?:\\[\\[HL\\]\\])? ?([^:]{1,60})$",
+      "(?:^|\\s)(?:\\[\\[HL\\]\\])? ?(" + AR_OPTION_LETTER + "|[A-Da-d])(?:\\[\\[\\/HL\\]\\])?(?:[\\)\\.\uFF1A:]?\\s+(?:\\[\\[HL\\]\\])? ?)([^:]{1,60})$",
     );
     const m = s.match(re);
     if (!m || m.index === undefined) return { before: s, option: null, highlighted: false };
