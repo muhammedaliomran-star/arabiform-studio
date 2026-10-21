@@ -64,6 +64,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
     .replace(/\u000B/g, "\n")
+    .replace(/\u0640/g, "") // tatweel: "هـ" → "ه" لتوحيد بادئات الخيارات
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
@@ -110,6 +111,9 @@ export function parseDocText(raw: string): ParsedBlock[] {
   const isSectionHeader = (s: string): boolean =>
     /^(?:\u0642\u0633\u0645|\u0627\u0644\u0641\u0635\u0644|\u0627\u0644\u0648\u062d\u062f\u0629|\u0627\u0644\u062f\u0631\u0633|\u0627\u0644\u0628\u0627\u0628)[\s(\u0600-\u06FF]/.test(s);
 
+  /** أحرف الخيارات العربية الشائعة: أ إ آ ا ب ج د ه */
+  const AR_OPTION_LETTER = "[\u0623\u0625\u0622\u0627\u0628\u062C\u062F\u0647]";
+
   // extract option text: strip prefixes
   const extractOptionText = (s: string): string => {
     let t = s;
@@ -124,21 +128,52 @@ export function parseDocText(raw: string): ParsedBlock[] {
     t = t.replace(/^\d{1,2}\s+/, "");
     // Regular digit tight + Arabic letter: "1murder" (no space)
     t = t.replace(/^\d{1,2}(?=[\u0621-\u064A])/, "");
-    // Arabic single letter + paren/colon: "A) " "A: "
-    t = t.replace(/^[\u0621-\u064A][\)\uFF1A:]\s*/, "");
-    // English letter + paren/colon: "A) " "A: "
-    t = t.replace(/^[A-Za-z]{1,2}[\)\uFF1A:]\s*/, "");
+    // Arabic single letter + paren/dot/colon: "أ) " "أ. " "أ: "
+    t = t.replace(/^[\u0621-\u064A][\)\.\uFF1A:]\s*/, "");
+    // Arabic option letter + bare space: "أ الرياح"
+    t = t.replace(new RegExp("^" + AR_OPTION_LETTER + "\\s+"), "");
+    // English letter + paren/dot/colon: "A) " "A. " "A: "
+    t = t.replace(/^[A-Za-z]{1,2}[\)\.\uFF1A:]\s*/, "");
+    // English option letter + bare space: "A murder"
+    t = t.replace(/^[A-Da-d]\s+/, "");
     return t.trim();
   };
 
-  // detect option prefix: digit+separator, digit+tight-Arabic, letter+paren (NOT digit+space = question)
+  // detect option prefix: digit+separator, digit+tight-Arabic, letter+paren/dot/colon,
+  // letter+bare-space (أ الرياح) — (NOT digit+space = question numbering)
   const hasOptionPrefix = (s: string): boolean =>
     /^(?:[\u0660-\u0669]{1,2}|\d{1,2})[\-\.\)\uFF1D\uFF1A:]\s*\S/.test(s) ||
     /^(?:[\u0660-\u0669]{1,2}|\d{1,2})(?=[\u0621-\u064A])/.test(s) ||
-    /^(?:[\u0621-\u064A]{1,2}|[A-Za-z]{1,2})[\)\uFF1A:]\s*\S/.test(s);
+    /^[\u0621-\u064A][\)\.\uFF1A:]\s*\S/.test(s) ||
+    new RegExp("^" + AR_OPTION_LETTER + "\\s+(?=\\S)").test(s) ||
+    /^(?:[\u0621-\u064A]{1,2}|[A-Za-z]{1,2})[\)\uFF1A:]\s*\S/.test(s) ||
+    /^[A-Da-d]\s+(?=\S)/.test(s);
 
   let i = 0;
   let questionNumber = 0;
+
+  /**
+   * فصل خيار (أ) الملتحم بنهاية سطر السؤال — شائع في أسئلة التناظر اللفظي:
+   * "القلم : كتابة أ الورق" → العنوان "القلم : كتابة" + خيار "الورق".
+   * يتسامح مع علامات التظليل [[HL]] حول الحرف أو الخيار، ويشترط أن يبقى
+   * قبل الحرف جزء كافٍ من السؤال، وأن يبدأ الذيل بكلمة حقيقية.
+   */
+  const splitTitleOption = (
+    s: string,
+  ): { before: string; option: string | null; highlighted: boolean } => {
+    const re = new RegExp(
+      "(?:^|\\s)(?:\\[\\[HL\\]\\])? ?(" + AR_OPTION_LETTER + "|[A-Da-d])(?:\\[\\[\\/HL\\]\\])?(?:[\\)\\.\uFF1A:]?\\s+(?:\\[\\[HL\\]\\])? ?)([^:]{1,60})$",
+    );
+    const m = s.match(re);
+    if (!m || m.index === undefined) return { before: s, option: null, highlighted: false };
+    const before = stripHL(s.slice(0, m.index)).trim();
+    const tailClean = stripHL(m[2]).trim();
+    if (before.length < 5 || tailClean.length === 0) return { before: s, option: null, highlighted: false };
+    // الذيل يجب أن يبدأ بكلمة حقيقية (لا علامة ترقيم)
+    if (!/^[\u0621-\u064A0-9A-Za-z]/.test(tailClean)) return { before: s, option: null, highlighted: false };
+    const highlighted = s.slice(m.index).includes("[[HL]]");
+    return { before, option: tailClean, highlighted };
+  };
 
   while (i < n) {
     const cur = lines[i];
@@ -186,9 +221,17 @@ export function parseDocText(raw: string): ParsedBlock[] {
     // if 2+ options found, this line is a QUESTION
     if (options.length >= 2) {
       questionNumber++;
+      // فصل خيار (أ) الملتحم بنهاية سطر السؤال (تناظر لفظي) — يبقى التناظر في العنوان
+      const split = splitTitleOption(cur);
+      let title = cleanTitle;
+      if (split.option) {
+        title = stripSourceNumber(split.before);
+        options.unshift(split.option);
+        if (split.highlighted) correctAnswer.unshift(split.option);
+      }
       blocks.push({
         kind: "radio",
-        title: questionNumber + ". " + cleanTitle,
+        title: questionNumber + ". " + title,
         options: options,
         correct: correctAnswer.length > 0 ? correctAnswer : undefined,
         required: true,
