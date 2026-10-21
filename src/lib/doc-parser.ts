@@ -222,7 +222,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
     if (options.length >= 2) {
       questionNumber++;
       // فصل خيار (أ) الملتحم بنهاية سطر السؤال (تناظر لفظي) — يبقى التناظر في العنوان
-      const split = splitTitleOption(curClean);
+      const split = splitTitleOption(cur);
       let title = cleanTitle;
       if (split.option) {
         title = stripSourceNumber(split.before);
