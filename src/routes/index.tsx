@@ -120,10 +120,14 @@ function HomePage() {
 
   const handleImportDoc = (questions: Question[]) => {
     if (!questions.length) return;
+    // أي إجابة صحيحة مستوردة (الخيار المظلل بالأصفر في الوورد) تفعّل وضع
+    // الاختبار تلقائياً حتى تُصحَّح الإجابات في المعاينة ويُصدَّر النموذج كاختبار.
+    const hasCorrect = questions.some((q) => (q.correct?.length ?? 0) > 0);
     if (active) {
       // أضف الأسئلة المستوردة إلى نهاية النموذج النشط
       updateActive({
         questions: [...active.questions, ...questions],
+        ...(hasCorrect && !active.isQuiz ? { isQuiz: true } : {}),
       });
       toast.success(
         `تمت إضافة ${questions.length} سؤالاً إلى "${active.title}"`,
@@ -135,6 +139,7 @@ function HomePage() {
         id: uid(),
         title: "مستورد من ملف",
         description: "",
+        isQuiz: hasCorrect || undefined,
         questions,
         updatedAt: Date.now(),
       });
