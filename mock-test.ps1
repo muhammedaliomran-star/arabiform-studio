@@ -23,25 +23,68 @@ function Test-AnswerBlank([string]$s) { return ($s -cmatch $BLANK_RE) }
 function Test-PassageStart([string]$s) { return ($s -cmatch $PASSAGE_MARK -or $s -cmatch $PASSAGE_TITLE) }
 
 # ---------------------------------------------------------------- extraction
-# exact port of readDocxFile() paragraph/run extraction (fixed runRe)
+# exact port of readDocxFile() paragraph/run extraction (fixed runRe + yellow shading)
+function Test-YellowFill([string]$hex) {
+    $n = 0
+    if (-not [int]::TryParse($hex, [System.Globalization.NumberStyles]::HexNumber, $null, [ref]$n)) { return $false }
+    $r = ($n -shr 16) -band 0xFF
+    $g = ($n -shr 8) -band 0xFF
+    $b = $n -band 0xFF
+    return ($r -ge 200 -and $g -ge 180 -and $b -lt 200 -and ($r - $b) -ge 40)
+}
+
+function Test-YellowShading([string]$frag) {
+    $m = [regex]::Match($frag, '<w:shd[^>]*w:fill="([0-9A-Fa-f]{6})"', 'IgnoreCase')
+    if (-not $m.Success) { return $false }
+    return Test-YellowFill $m.Groups[1].Value
+}
+
 function Get-XmlLines([string]$xml) {
-    $paras = [regex]::Split($xml, '<w:p[\s>]')
     $out = New-Object System.Collections.ArrayList
-    for ($k = 1; $k -lt $paras.Length; $k++) {
-        $p = $paras[$k]
-        $e = $p.IndexOf('</w:p>')
-        $content = if ($e -ge 0) { $p.Substring(0, $e) } else { $p }
+    $stack = New-Object System.Collections.Stack
+    # نجمع التوكنات أولاً حتى تكون حدود كل فقرة معلومة (الفقرات ذاتية الإغلاق
+    # <w:p .../> لا تحوي </w:p> ولا يجوز أن يمتد البحث خلفها إلى فقرة تالية).
+    $tokens = [regex]::Matches($xml, '<w:tc[\s>]|</w:tc[\s>]|<w:p[\s>]')
+    for ($ti = 0; $ti -lt $tokens.Count; $ti++) {
+        $t = $tokens[$ti]
+        $tok = $t.Value
+        if ($tok.StartsWith('</w:tc')) { if ($stack.Count -gt 0) { [void]$stack.Pop() }; continue }
+        if ($tok.StartsWith('<w:tc')) {
+            $prEnd = $xml.IndexOf('</w:tcPr>', $t.Index)
+            $firstP = $xml.IndexOf('<w:p', $t.Index)
+            $headEnd = if ($prEnd -ge 0) { $prEnd + 9 } else { $t.Index + 1500 }
+            if ($firstP -ge 0 -and $firstP -lt $headEnd) { $headEnd = $firstP }
+            $len = [Math]::Min($headEnd, $xml.Length) - $t.Index
+            [void]$stack.Push((Test-YellowShading $xml.Substring($t.Index, $len)))
+            continue
+        }
+        $paraStart = $t.Index + $tok.Length
+        $nextIdx = if (($ti + 1) -lt $tokens.Count) { $tokens[$ti + 1].Index } else { $xml.Length }
+        $paraEnd = $xml.IndexOf('</w:p>', $paraStart)
+        if ($paraEnd -lt 0 -or $nextIdx -lt $paraEnd) { $paraEnd = $nextIdx }
+        $content = $xml.Substring($paraStart, $paraEnd - $paraStart)
         $parts = New-Object System.Collections.ArrayList
         foreach ($m in [regex]::Matches($content, '<w:r[\s>]([\s\S]*?)</w:r>')) {
             $run = $m.Groups[1].Value
-            $hl = $run -cmatch '<w:highlight[^>]*w:val="yellow"'
+            $hl = ($run -cmatch '<w:highlight[^>]*w:val="yellow"') -or (Test-YellowShading $run)
             $tm = [regex]::Match($run, '<w:t[^>]*>([^<]*)</w:t>')
             if (-not $tm.Success) { continue }
             $text = $tm.Groups[1].Value
             if ($text.Length -eq 0) { continue }
             if ($hl) { [void]$parts.Add('[[HL]]' + $text + '[[/HL]]') } else { [void]$parts.Add($text) }
         }
-        [void]$out.Add((($parts -join '').Trim()))
+        $pPrIdx = $content.IndexOf('<w:pPr')
+        $pPrEnd = $content.IndexOf('</w:pPr>')
+        $paraShaded = $false
+        if ($pPrIdx -ge 0 -and $pPrEnd -gt $pPrIdx) {
+            $pPrStop = [Math]::Min($pPrEnd + 9, $content.Length)
+            $paraShaded = Test-YellowShading $content.Substring($pPrIdx, $pPrStop - $pPrIdx)
+        }
+        $cellHL = $false
+        foreach ($v in $stack) { if ($v) { $cellHL = $true; break } }
+        $line = (($parts -join '').Trim())
+        if (($paraShaded -or $cellHL) -and $line.Length -gt 0) { $line = '[[HL]]' + $line + '[[/HL]]' }
+        [void]$out.Add($line)
     }
     return $out
 }
@@ -368,6 +411,69 @@ else {
 $noHeader = $true
 foreach ($b in $b3) { if ($b.title -cmatch '\u0642\u0633\u0645') { $noHeader = $false } }
 Check 'section header never became a question' $noHeader
+
+# =================================================================== TEST 5
+# تمييز الإجابة الصحيحة: تعبئة خلية صفراء في جدول Word + ملف حقيقي اختياري
+Write-Host '===== TEST 5 : yellow-shaded table cells = correct answer ====='
+$tbl = -join @(
+    '<w:tbl><w:tr>'
+    '<w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="FFF3A6"/></w:tcPr>'
+    '<w:p><w:r><w:t>' + (U 0x627,0x644,0x62E,0x64A,0x627,0x631,0x3A,0x20,0x627,0x644,0x62A,0x631,0x641) + '</w:t></w:r></w:p>'
+    '</w:tc>'
+    '<w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="B8501A"/></w:tcPr>'
+    '<w:p><w:r><w:t>' + (U 0x647,0x62F,0x631,0x3A,0x20,0x635,0x631,0x641) + '</w:t></w:r></w:p>'
+    '</w:tc>'
+    '<w:tc><w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="FFFAF5"/></w:tcPr>'
+    '<w:p><w:r><w:t>' + (U 0x62C,0x645,0x639,0x3A,0x20,0x642,0x62A,0x644) + '</w:t></w:r></w:p>'
+    '</w:tc>'
+    '</w:tr></w:tbl>'
+)
+# رقم سؤال بصيغة "7." (كما في الملفات الحقيقية) حتى تُبنى كتلة أسئلة تستقبل الخيارات
+$qLine = (U 0x37,0x2E,0x20,0x627,0x644,0x62C,0x627,0x628,0x629,0x20,0x645,0x646,0x20,0x627,0x644,0x62A,0x631,0x641,0x61F)
+$lines5 = Get-XmlLines $tbl
+$b5 = Parse-DocText ($qLine + "`n" + ($lines5 -join "`n"))
+Write-Host ('--- shaded-table doc: ' + $b5.Count + ' blocks ---')
+Check 'T5: one question block' ($b5.Count -eq 1) ('got ' + $b5.Count)
+if ($b5.Count -ge 1) {
+    Check 'T5: three options extracted' ($b5[0].options.Count -eq 3) ($b5[0].options -join ' | ')
+    $trf = U 0x627,0x644,0x62E,0x64A,0x627,0x631,0x3A,0x20,0x627,0x644,0x62A,0x631,0x641
+    Check 'T5: shaded cell became the correct answer' (($b5[0].correct.Count -eq 1) -and ($b5[0].correct[0] -eq $trf)) ($b5[0].correct -join ' | ')
+    $optRaw = $false
+    foreach ($o in $b5[0].options) { if ($o -cmatch '\[\[') { $optRaw = $true } }
+    Check 'T5: no [[HL]] marker leaked into option labels' (-not $optRaw) ($b5[0].options -join ' | ')
+}
+
+# ملف وورد حقيقي على الجهاز (تنسيق خلايا مظللة) — يُتخطى إن لم يوجد
+$realDocx = "C:\Users\OMRAN\Desktop\الأقسام_الجديدة (1).docx"
+if ($env:REAL_DOCX) { $realDocx = $env:REAL_DOCX }
+if (Test-Path $realDocx) {
+    Write-Host '===== TEST 5b : real docx with shaded cells ====='
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($realDocx)
+    $entry = $zip.Entries | Where-Object { $_.FullName -eq 'word/document.xml' }
+    $ms = New-Object System.IO.MemoryStream
+    $st = $entry.Open(); $st.CopyTo($ms); $st.Close()
+    $realXml = [System.Text.Encoding]::UTF8.GetString($ms.ToArray())
+    $zip.Dispose()
+    $lines5 = Get-XmlLines $realXml
+    $hlLines = @($lines5 | Where-Object { $_ -cmatch '\[\[HL\]\]' })
+    Write-Host ('--- real docx: ' + $lines5.Count + ' lines, ' + $hlLines.Count + ' highlighted ---')
+    Check 'real: at least one highlighted option detected' ($hlLines.Count -ge 1) ('got ' + $hlLines.Count)
+    $raw5 = ($lines5 -join "`n")
+    $b5r = Parse-DocText $raw5
+    $withCorrect = @($b5r | Where-Object { $_.correct -and $_.correct.Count -gt 0 })
+    Write-Host ('--- real docx: ' + $b5r.Count + ' questions, ' + $withCorrect.Count + ' with correct answer ---')
+    Check 'real: highlighted cells became correct answers' ($withCorrect.Count -ge 1) ('got ' + $withCorrect.Count)
+    foreach ($b in $b5r) {
+        if (-not $b.correct) { continue }
+        foreach ($c in $b.correct) {
+            Check ('real: correct "' + $c.Substring(0, [Math]::Min(18, $c.Length)) + '" is one of the options') ($b.options -contains $c) ($b.options -join ' | ')
+        }
+    }
+}
+else {
+    Write-Host '===== TEST 5b skipped (real docx not present) ====='
+}
 
 Write-Host ''
 if ($script:fail -eq 0) { Write-Host 'ALL TESTS PASSED' }

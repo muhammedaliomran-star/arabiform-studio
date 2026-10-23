@@ -100,21 +100,67 @@ async function readDocxFile(file: File): Promise<string> {
       .replace(/&#(\d+);/g, (_m, dec) => String.fromCharCode(parseInt(dec, 10)))
       .replace(/&amp;/g, "&"); // آخرًا لتفادي "&amp;amp;"
 
-  // تقسيم حسب الفقرات <w:p ...> أو <w:p> أولاً، ثم استخراج النصوص داخل كل فقرة.
-  // هذا يحافظ على حدود الأسطر/الفقرات بدل دمج كل شيء في سطر واحد.
-    const paragraphs = xml.split(/<w:p[\s>]/);
+  // التمييز الأصفر (الإجابة الصحيحة) يأتي في Word بثلاث صور:
+  // 1) تمييز على النص نفسه <w:highlight w:val="yellow"/>
+  // 2) تعبئة خلفية <w:shd> على مستوى الحرف أو الفقرة
+  // 3) تعبئة خلفية الخلية في الجدول <w:tcPr><w:shd .../>
+  // نقبل فقط الأصباغ الصفراء الحقيقية (لا البرتقالية/الكريمية المستخدمة للزينة).
+  const YELLOW_SHD_RE = /<w:shd[^>]*w:fill="([0-9A-Fa-f]{6})"/i;
+  const isYellowFill = (hex: string): boolean => {
+    const n = parseInt(hex, 16);
+    if (isNaN(n)) return false;
+    const r = (n >> 16) & 0xff;
+    const g = (n >> 8) & 0xff;
+    const b = n & 0xff;
+    return r >= 200 && g >= 180 && b < 200 && r - b >= 40;
+  };
+  const hasYellowShading = (frag: string): boolean => {
+    const m = frag.match(YELLOW_SHD_RE);
+    return m ? isYellowFill(m[1]) : false;
+  };
+
+  // نمشي على المستند بتسلسله: خلايا الجدول تفتح نطاقات تظليل يرثه ما بداخلها.
+  // نجمع التوكنات أولاً حتى تكون حدود كل فقرة معلومة (الفقرات ذاتية الإغلاق
+  // <w:p .../> لا تحوي </w:p> ولا يجوز أن يمتد البحث خلفها إلى فقرة تالية).
+  const tokens: RegExpExecArray[] = [];
+  const tokenRe = /<w:tc[\s>]|<\/w:tc[\s>]|<w:p[\s>]/g;
+  let tk: RegExpExecArray | null;
+  while ((tk = tokenRe.exec(xml)) !== null) tokens.push(tk);
+
   const lines: string[] = [];
-  for (let i = 1; i < paragraphs.length; i++) {
-    const para = paragraphs[i];
-    const paraEnd = para.indexOf("</w:p>");
-    const paraContent = paraEnd >= 0 ? para.slice(0, paraEnd) : para;
+  const cellStack: boolean[] = [];
+  for (let ti = 0; ti < tokens.length; ti++) {
+    const tm = tokens[ti];
+    const tok = tm[0];
+    if (tok.startsWith("</w:tc")) {
+      if (cellStack.length) cellStack.pop();
+      continue;
+    }
+    if (tok.startsWith("<w:tc")) {
+      // <w:tcPr> يلي <w:tc> مباشرة ويتوقف عند أول فقرة
+      const prEnd = xml.indexOf("</w:tcPr>", tm.index);
+      const firstP = xml.indexOf("<w:p", tm.index);
+      let headEnd = prEnd >= 0 ? prEnd + 9 : tm.index + 1500;
+      if (firstP >= 0 && firstP < headEnd) headEnd = firstP;
+      cellStack.push(hasYellowShading(xml.slice(tm.index, headEnd)));
+      continue;
+    }
+
+    // فقرة كاملة: نستخرج نصوص حروفها ثم نقرر تظليلها.
+    // الحدود: أول </w:p> أو بداية التوكن التالي أيهما أقرب.
+    const paraStart = tm.index + tok.length;
+    const nextIdx = ti + 1 < tokens.length ? tokens[ti + 1].index : xml.length;
+    let paraEnd = xml.indexOf("</w:p>", paraStart);
+    if (paraEnd < 0 || nextIdx < paraEnd) paraEnd = nextIdx;
+    const paraContent = xml.slice(paraStart, paraEnd);
 
     const parts: string[] = [];
     const runRe = /<w:r[\s>]([\s\S]*?)<\/w:r>/g;
     let rm: RegExpExecArray | null;
     while ((rm = runRe.exec(paraContent)) !== null) {
       const runContent = rm[1];
-      const isHighlighted = /<w:highlight[^>]*w:val="yellow"/i.test(runContent);
+      const isHighlighted =
+        /<w:highlight[^>]*w:val="yellow"/i.test(runContent) || hasYellowShading(runContent);
       const tMatch = runContent.match(/<w:t[^>]*>([^<]*)<\/w:t>/);
       const text = tMatch ? decodeXml(tMatch[1]) : "";
       if (text.length === 0) continue;
@@ -125,9 +171,17 @@ async function readDocxFile(file: File): Promise<string> {
       }
     }
 
-    const line = parts.join("").trim();
+    // تظليل الفقرة نفسها <w:pPr><w:shd .../> يغطي كل نصها.
+    const pPrIdx = paraContent.indexOf("<w:pPr");
+    const pPrEnd = paraContent.indexOf("</w:pPr>");
+    const paraShaded =
+      pPrIdx >= 0 && pPrEnd > pPrIdx && hasYellowShading(paraContent.slice(pPrIdx, pPrEnd + 9));
+
+    let line = parts.join("").trim();
+    if ((paraShaded || cellStack.some((v) => v)) && line) line = "[[HL]]" + line + "[[/HL]]";
     lines.push(line);
-  }  const joined = lines.join("\n");
+  }
+  const joined = lines.join("\n");
   return joined.trim().length > 0 ? joined : xml.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 }
 
