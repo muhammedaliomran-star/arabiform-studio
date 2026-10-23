@@ -12,6 +12,16 @@ function U([int[]]$codes) { return (-join ($codes | ForEach-Object { [char]$_ })
 $arCodes = 0x0623, 0x0625, 0x0622, 0x0627, 0x0628, 0x062C, 0x062F, 0x0647, 0x0632, 0x062D, 0x0637, 0x064A
 $AR = '[' + (($arCodes | ForEach-Object { '\u{0:x4}' -f $_ }) -join '') + ']'
 
+# passage/intro block markers (mirrors PASSAGE_MARK_RE / PASSAGE_TITLE_RE in doc-parser.ts)
+$PASSAGE_MARK = '^[\u25A0\u25AA\u25CF\u2605\u25A1\u2B1B\u258C]\s*\S'
+$PASSAGE_TITLE = '^(?:\u0646\u0635|\u0627\u0644\u0646\u0635|\u0627\u0644\u0642\u0631\u0627\u0621\u0629|\u0627\u0644\u0642\u0635\u0629|\u0627\u0644\u0627\u0633\u062A\u0645\u0627\u0639|\u0627\u0644\u0645\u0642\u0631\u0648\u0621|\u0627\u0644\u0646\u0635 \u0627\u0644\u062A\u0645\u0647\u0649\u062F\u064A)\s*[\(\uFF08]\s*\S'
+$PROSE_SOFT = 100
+$PROSE_HARD = 150
+$BLANK_RE = '_{2,}|\.{4,}|\u2026{1,}'
+
+function Test-AnswerBlank([string]$s) { return ($s -cmatch $BLANK_RE) }
+function Test-PassageStart([string]$s) { return ($s -cmatch $PASSAGE_MARK -or $s -cmatch $PASSAGE_TITLE) }
+
 # ---------------------------------------------------------------- extraction
 # exact port of readDocxFile() paragraph/run extraction (fixed runRe)
 function Get-XmlLines([string]$xml) {
@@ -117,14 +127,25 @@ function Parse-DocText([string]$raw) {
     $n = $lines.Count
     $qnum = 0
     $i = 0
+    $inPassage = $false
 
     while ($i -lt $n) {
         $cur = $lines[$i]
         $curClean = Strip-HL $cur
         if ($curClean.Length -eq 0) { $i++; continue }
 
+        # start of an intro/passage block ("■ نص (العنوان)")
+        if (Test-PassageStart $curClean) { $inPassage = $true; $i++; continue }
+
         $cleanTitle = Strip-SourceNumber $curClean
-        if ((Test-SectionHeader $curClean) -or (Test-SectionHeader $cleanTitle)) { $i++; continue }
+        $numberedLine = Test-QuestionNumberLine $curClean
+        if ((Test-SectionHeader $curClean) -or (Test-SectionHeader $cleanTitle)) { $inPassage = $false; $i++; continue }
+
+        # inside a passage block: skip prose paragraphs until the next numbered question
+        if ($inPassage) {
+            if ($numberedLine) { $inPassage = $false }
+            else { $i++; continue }
+        }
 
         $options = New-Object System.Collections.ArrayList
         $correct = New-Object System.Collections.ArrayList
@@ -136,6 +157,7 @@ function Parse-DocText([string]$raw) {
             $optClean = Strip-HL $optRaw
             if ($optClean.Length -eq 0) { $j++; continue }
             if ((Test-QuestionNumberLine $optClean) -or (Test-SectionHeader $optClean)) { break }
+            if (Test-PassageStart $optClean) { break }
             if ($optClean.Length -gt 80) { break }
             if ($optClean -cmatch '[?\u061F]\s*$') { break }
 
@@ -174,6 +196,13 @@ function Parse-DocText([string]$raw) {
         }
 
         if (Test-OptionPrefix $curClean) { $i++; continue }
+
+        # unnumbered long prose (intro/reading text) is never a question
+        if ((-not $numberedLine) -and (-not (Test-AnswerBlank $cleanTitle))) {
+            if ($cleanTitle.Length -ge $PROSE_HARD) { $i++; continue }
+            if (($cleanTitle.Length -ge $PROSE_SOFT) -and ($cleanTitle -cnotmatch '[\u061F?]\s*[!.]?\s*$')) { $i++; continue }
+        }
+
         if (($cleanTitle.Length -lt 40) -and ($cleanTitle -cnotmatch '[\u061F?]')) { $i++; continue }
 
         $qnum++
@@ -267,8 +296,8 @@ $sc = Get-Content 'D:\stararabiform\test-scenarios.txt' -Raw -Encoding UTF8
 $b3 = Parse-DocText $sc
 Show-Blocks 'scenarios' $b3
 
-Check 'scenarios -> 6 questions' ($b3.Count -eq 6) ('got ' + $b3.Count)
-if ($b3.Count -ge 5) {
+Check 'scenarios -> 9 questions' ($b3.Count -eq 9) ('got ' + $b3.Count)
+if ($b3.Count -ge 9) {
     Check 'S-A digit+space question + 4 options' (($b3[0].title -match '^1\. ') -and ($b3[0].options.Count -eq 4)) $b3[0].title
     Check 'S-B "V.1" question, number stripped' (($b3[1].title -match '^2\. ') -and ($b3[1].options.Count -eq 4)) $b3[1].title
     $c1 = ''
@@ -288,6 +317,53 @@ if ($b3.Count -ge 6) {
     Check 'S-F glued (A) split: title keeps the analogy' ($b3[5].title -eq ('6. ' + $pen)) $b3[5].title
     Check 'S-F glued (A) split: becomes the first option' ($firstOpt -eq $paper) ($firstOpt + ' / ' + ($b3[5].options -join ' | '))
     Check 'S-F has 4 options total' ($b3[5].options.Count -eq 4) ($b3[5].options -join ' | ')
+}
+if ($b3.Count -ge 9) {
+    # P-A: passage block "■ نص (...)" -> its prose is NOT a question
+    Check 'P-A passage block yields the numbered question only' (($b3[6].kind -eq 'radio') -and ($b3[6].options.Count -eq 4)) ($b3[6].kind + ' / ' + ($b3[6].options -join ' | '))
+    Check 'P-A passage question title has no marker and is short' (($b3[6].title.Length -lt 60) -and ($b3[6].title -cnotmatch '[\u25A0\u25AA\u25CF]')) $b3[6].title
+    $twelve = U 0x0661,0x0662,0x20,0x0645,0x0631,0x0629
+    $pfirst = ''
+    if ($b3[6].options.Count -gt 0) { $pfirst = $b3[6].options[0] }
+    Check 'P-A first option is the (A) text' ($pfirst -eq $twelve) ($pfirst + ' / ' + ($b3[6].options -join ' | '))
+
+    # unmarked long prose paragraph is dropped
+    # numbered long short-answer question is kept
+    Check 'P-B long numbered short-answer question kept' (($b3[7].kind -eq 'short') -and ($b3[7].title -cmatch '^8\. ') -and ($b3[7].title.Length -gt 90)) ($b3[7].kind + ' len=' + $b3[7].title.Length + ' / ' + $b3[7].title)
+
+    # short unnumbered question ending with ? is kept
+    Check 'P-C short question with ? kept' (($b3[8].kind -eq 'short') -and ($b3[8].title -cmatch '^9\. ')) ($b3[8].title)
+}
+$noPassage = $true
+foreach ($b in $b3) { if ($b.title -cmatch '[\u25A0\u25AA\u25CF\u2605]') { $noPassage = $false } }
+Check 'no passage marker leaked into a question title' $noPassage
+
+# =================================================================== TEST 4
+# real exam file with 23 passage blocks (extracted lines, optional)
+$exam = 'D:\stararabiform\lines-5.txt'
+if ($env:EXAM_FILE) { $exam = $env:EXAM_FILE }
+if (Test-Path $exam) {
+    Write-Host '===== TEST 4 : real exam with 23 passage blocks ====='
+    $rawExam = [System.IO.File]::ReadAllText($exam, [System.Text.Encoding]::UTF8)
+    $b4 = Parse-DocText $rawExam
+    Write-Host ('--- real exam : ' + $b4.Count + ' questions ---')
+    $maxLen = 0
+    $markerLeak = $false
+    foreach ($b in $b4) {
+        if ($b.title.Length -gt $maxLen) { $maxLen = $b.title.Length }
+        if ($b.title -cmatch '[\u25A0\u25AA\u25CF\u2605]') { $markerLeak = $true }
+    }
+    Check 'exam: no passage marker in any title' (-not $markerLeak)
+    Check 'exam: no passage paragraph imported (titles < 200 chars)' ($maxLen -lt 200) ('max title len=' + $maxLen)
+    Check 'exam: questions recovered' ($b4.Count -ge 5) ('got ' + $b4.Count)
+    # only print titles when explicitly asked (they are long)
+    if ($env:EXAM_TITLES) {
+        Write-Host '--- titles ---'
+        foreach ($b in $b4) { Write-Host ('  [' + $b.kind + '] (' + $b.options.Count + ') ' + $b.title) }
+    }
+}
+else {
+    Write-Host '===== TEST 4 skipped (lines-5.txt not present) ====='
 }
 $noHeader = $true
 foreach ($b in $b3) { if ($b.title -cmatch '\u0642\u0633\u0645') { $noHeader = $false } }

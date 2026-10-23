@@ -19,6 +19,8 @@ dist-ssr
 # Local parser test fixtures (extracted from a user's private docx)
 raw-xml.txt
 raw-docx.txt
+raw-xml-*.txt
+lines-*.txt
 
 # Wrangler / Cloudflare
 .wrangler/

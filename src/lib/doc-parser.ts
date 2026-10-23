@@ -111,6 +111,21 @@ export function parseDocText(raw: string): ParsedBlock[] {
   const isSectionHeader = (s: string): boolean =>
     /^(?:\u0642\u0633\u0645|\u0627\u0644\u0641\u0635\u0644|\u0627\u0644\u0648\u062d\u062f\u0629|\u0627\u0644\u062f\u0631\u0633|\u0627\u0644\u0628\u0627\u0628)[\s(\u0600-\u06FF]/.test(s);
 
+  /**
+   * بداية كتلة نص تمهيدي (مقروءات) — علامة مربعة أو عنوان "نص (العنوان)".
+   * فقرات كتلة كهذه نثر تعليمي وليس أسئلة، وتُتجاهل حتى السؤال المرقّم التالي.
+   */
+  const PASSAGE_MARK_RE = /^[\u25A0\u25AA\u25CF\u2605\u25A1\u2B1B\u258C]\s*\S/;
+  const PASSAGE_TITLE_RE =
+    /^(?:\u0646\u0635|\u0627\u0644\u0646\u0635|\u0627\u0644\u0642\u0631\u0627\u0621\u0629|\u0627\u0644\u0642\u0635\u0629|\u0627\u0644\u0627\u0633\u062A\u0645\u0627\u0639|\u0627\u0644\u0645\u0642\u0631\u0648\u0621|\u0627\u0644\u0646\u0635 \u0627\u0644\u062A\u0645\u0647\u0649\u062F\u064A)\s*[\(\uFF08]\s*\S/;
+
+  /** سطر نثر تمهيدي غير مرقّم: طويل (100+) أو طويل جداً (150+) حتى لو انتهى بعلامة استفهام */
+  const PROSE_SOFT_LENGTH = 100;
+  const PROSE_HARD_LENGTH = 150;
+
+  /** فجوة إجابة يملؤها الطالب: "...." أو "____" */
+  const hasAnswerBlank = (s: string): boolean => /_{2,}|\.{4,}|\u2026{1,}/.test(s);
+
   /** أحرف الخيارات العربية الشائعة: أ إ آ ا ب ج د ه ز ح ط ي */
   const AR_OPTION_LETTER = "[\u0623\u0625\u0622\u0627\u0628\u062C\u062F\u0647\u0632\u062D\u0637\u064A]";
 
@@ -151,6 +166,8 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
   let i = 0;
   let questionNumber = 0;
+  // هل نحن داخل كتلة نص تمهيدي (مقروءات)؟
+  let inPassage = false;
 
   /**
    * فصل خيار (أ) الملتحم بنهاية سطر السؤال — شائع في أسئلة التناظر اللفظي:
@@ -180,10 +197,24 @@ export function parseDocText(raw: string): ParsedBlock[] {
     const curClean = stripHL(cur);
     if (!curClean) { i++; continue; }
 
+    // بداية كتلة نص تمهيدي (مقروءات): "■ نص (الأرض والقمر)" — العنوان ليس سؤالاً
+    if (PASSAGE_MARK_RE.test(curClean) || PASSAGE_TITLE_RE.test(curClean)) {
+      inPassage = true;
+      i++;
+      continue;
+    }
+
     const cleanTitle = stripSourceNumber(curClean);
+    const numberedLine = isQuestionNumberLine(curClean);
 
     // section header lines are never questions
-    if (isSectionHeader(curClean) || isSectionHeader(cleanTitle)) { i++; continue; }
+    if (isSectionHeader(curClean) || isSectionHeader(cleanTitle)) { inPassage = false; i++; continue; }
+
+    // داخل كتلة نص تمهيدي: تُتجاهل الفقرات (نثر تعليمي) حتى السؤال المرقّم التالي
+    if (inPassage) {
+      if (numberedLine) inPassage = false;
+      else { i++; continue; }
+    }
 
     // lookahead: collect option lines following this line
     const options: string[] = [];
@@ -198,6 +229,8 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
       // stop at next question (digit+dot, digit+space, section header)
       if (isQuestionNumberLine(optClean) || isSectionHeader(optClean)) break;
+      // stop at the start of an intro/passage block
+      if (PASSAGE_MARK_RE.test(optClean) || PASSAGE_TITLE_RE.test(optClean)) break;
       if (optClean.length > 80) break;
       if (/[?\u061F]\s*$/.test(optClean)) break;
 
@@ -242,6 +275,16 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
     // orphaned prefixed option line (no parent question) - skip
     if (hasOptionPrefix(curClean)) { i++; continue; }
+
+    // فقرة نثر تمهيدية (مقروءات/شرح) — ليست سؤالاً: سطر غير مرقّم، طويل، بلا فجوة إجابة
+    if (!numberedLine && !hasAnswerBlank(cleanTitle)) {
+      if (cleanTitle.length >= PROSE_HARD_LENGTH) { i++; continue; }
+      // طويل ولا ينتهي بعلامة استفهام → نص تمهيدي
+      if (cleanTitle.length >= PROSE_SOFT_LENGTH && !/[\u061F?]\s*[!.]?\s*$/.test(cleanTitle)) {
+        i++;
+        continue;
+      }
+    }
 
     // short line without question mark - likely leftover header, skip
     if (cleanTitle.length < 40 && !/[\u061F?]/.test(cleanTitle)) { i++; continue; }

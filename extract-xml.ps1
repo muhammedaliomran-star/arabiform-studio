@@ -4,41 +4,34 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $desktop = Join-Path $env:USERPROFILE 'Desktop'
-$files = Get-ChildItem -Path $desktop -Filter '*.docx' -File -ErrorAction SilentlyContinue
+$files = Get-ChildItem -Path $desktop -Filter '*.docx' -File -ErrorAction SilentlyContinue | Sort-Object Name
 $temp = Join-Path $env:TEMP 'opencode'
 if (-not (Test-Path $temp)) { New-Item -ItemType Directory -Path $temp | Out-Null }
 
+$i = 0
 foreach ($f in $files) {
-    $dest = Join-Path $temp ($f.BaseName + '.docx')
-    try {
-        Copy-Item -Path $f.FullName -Destination $dest -Force -ErrorAction Stop
-    } catch {
-        Write-Host ('SKIP (locked): ' + $f.Name)
-        continue
-    }
+    $i++
+    $dest = Join-Path $temp ('d' + $i + '.docx')
+    try { Copy-Item -Path $f.FullName -Destination $dest -Force -ErrorAction Stop }
+    catch { Write-Host ('SKIP locked: ' + $f.Name); continue }
 
-    try {
-        $zip = [System.IO.Compression.ZipFile]::OpenRead($dest)
-    } catch {
-        Write-Host ('SKIP (not a zip): ' + $f.Name)
-        continue
-    }
+    try { $zip = [System.IO.Compression.ZipFile]::OpenRead($dest) }
+    catch { Write-Host ('SKIP not zip: ' + $f.Name); continue }
 
     $entry = $zip.Entries | Where-Object { $_.FullName -eq 'word/document.xml' } | Select-Object -First 1
-    if (-not $entry) { $zip.Dispose(); Write-Host ('SKIP (no document.xml): ' + $f.Name); continue }
+    if (-not $entry) { $zip.Dispose(); continue }
 
     $reader = New-Object System.IO.StreamReader($entry.Open(), [System.Text.Encoding]::UTF8)
     $xml = $reader.ReadToEnd()
     $reader.Close()
     $zip.Dispose()
 
-    $rows = ([regex]::Matches($xml, '<w:tr[\s>]')).Count
-    $hl = ([regex]::Matches($xml, '<w:highlight[^>]*w:val="yellow"')).Count
-    Write-Host ('FILE: ' + $f.Name + '   rows=' + $rows + '   yellowHL=' + $hl + '   xmlLen=' + $xml.Length)
+    $out = 'D:\stararabiform\raw-xml-' + $i + '.txt'
+    [System.IO.File]::WriteAllText($out, $xml, (New-Object System.Text.UTF8Encoding($false)))
 
-    if ($rows -eq 9) {
-        $out = 'D:\stararabiform\raw-xml.txt'
-        [System.IO.File]::WriteAllText($out, $xml, (New-Object System.Text.UTF8Encoding($false)))
-        Write-Host ('     -> written to ' + $out)
-    }
+    $rows = ([regex]::Matches($xml, '<w:tr[\s>]')).Count
+    $tbls = ([regex]::Matches($xml, '<w:tbl[\s>]')).Count
+    $hl = ([regex]::Matches($xml, '<w:highlight[^>]*w:val="yellow"')).Count
+    $shd = ([regex]::Matches($xml, '<w:shd[\s>]')).Count
+    Write-Host ('#' + $i + '  ' + $f.Name + '   size=' + $f.Length + '  tables=' + $tbls + '  rows=' + $rows + '  yellowHL=' + $hl + '  shd=' + $shd + '  -> ' + (Split-Path $out -Leaf))
 }
