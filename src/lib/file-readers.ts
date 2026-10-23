@@ -110,7 +110,7 @@ async function readDocxFile(file: File): Promise<string> {
     const paraContent = paraEnd >= 0 ? para.slice(0, paraEnd) : para;
 
     const parts: string[] = [];
-    const runRe = /<w:r>([\s\S]*?)<\/w:r>/g;
+    const runRe = /<w:r[\s>]([\s\S]*?)<\/w:r>/g;
     let rm: RegExpExecArray | null;
     while ((rm = runRe.exec(paraContent)) !== null) {
       const runContent = rm[1];

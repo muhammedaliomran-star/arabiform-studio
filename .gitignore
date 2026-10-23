@@ -16,6 +16,10 @@ dist-ssr
 .nitro
 *.local
 
+# Local parser test fixtures (extracted from a user's private docx)
+raw-xml.txt
+raw-docx.txt
+
 # Wrangler / Cloudflare
 .wrangler/
 .dev.vars

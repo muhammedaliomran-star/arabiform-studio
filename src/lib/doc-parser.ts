@@ -111,8 +111,8 @@ export function parseDocText(raw: string): ParsedBlock[] {
   const isSectionHeader = (s: string): boolean =>
     /^(?:\u0642\u0633\u0645|\u0627\u0644\u0641\u0635\u0644|\u0627\u0644\u0648\u062d\u062f\u0629|\u0627\u0644\u062f\u0631\u0633|\u0627\u0644\u0628\u0627\u0628)[\s(\u0600-\u06FF]/.test(s);
 
-  /** أحرف الخيارات العربية الشائعة: أ إ آ ا ب ج د ه */
-  const AR_OPTION_LETTER = "[\u0623\u0625\u0622\u0627\u0628\u062C\u062F\u0647]";
+  /** أحرف الخيارات العربية الشائعة: أ إ آ ا ب ج د ه ز ح ط ي */
+  const AR_OPTION_LETTER = "[\u0623\u0625\u0622\u0627\u0628\u062C\u062F\u0647\u0632\u062D\u0637\u064A]";
 
   // extract option text: strip prefixes
   const extractOptionText = (s: string): string => {
