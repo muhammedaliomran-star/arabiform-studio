@@ -133,9 +133,14 @@ async function readDocxFile(file: File): Promise<string> {
 
 /*==============================================================================
   مستعرض PDF خالص داخل المتصفح (بلا أي مكتبة خارجية أو CDN).
-  يقرأバイات PDF مباشرة، يستخرج التدفقات (streams)، يفك ضغط FlateDecode
-  عبر DecompressionStream المدمج في المتصفح، ويستخرج أوامر النص (Tj/TJ).
-  يدعم جدول ToUnicode لتحويل أكواد الحروف إلى يونيكود (نص عربي صحيح).
+  يقرأ بايتات الملف مباشرة على مستوى البايت (لا عبر نص مفكوك) لضمان دقة
+  الإزاحات في الملفات ثنائية الترميز، ويدعم:
+  - كائنات ObjStm (كائنات مضغوطة داخل تدفق واحد).
+  - /Contents كإحالة واحدة أو مصفوفة تدفقات.
+  - خطوطاً متعددة لكل صفحة عبر /Resources /Font مع جداول ToUnicode.
+  - أسطر جديدة حسب موضع النص (Td/TD/Tm/T*) بدل دمج كل شيء في سطر واحد.
+  - الخطوط ثنائية البايت (Identity-H) الشائعة في الخطوط العربية.
+  - اتجاه النص العربي: عكس الأسطر المخزنة بالترتيب البصري + توحيد الأشكال.
 ==============================================================================*/
 
 /** البحث عن تسلسل بايتات داخل بيانات PDF. */
@@ -151,300 +156,588 @@ const indexOfBytes = (haystack: Uint8Array, needle: Uint8Array, from = 0): numbe
 
 const STREAM_MARKER = new TextEncoder().encode("stream");
 const ENDSTREAM_MARKER = new TextEncoder().encode("endstream");
+const ENDOBJ_MARKER = new TextEncoder().encode("endobj");
 
-/** استخراج نص سلسلة PDF من مشغل (Tj) أو مصفوفة (TJ). */
-const extractStringFromPdf = (raw: string): string => {
-  // سلسلة بين قوسين: (نص)
-  if (raw.startsWith("(") && raw.endsWith(")")) {
-    let s = raw.slice(1, -1);
-    // فك الهروب: \n \r \t \b \f \\ \( \)
-    s = s
-      .replace(/\\([nrtbf\\()])/g, (_m, c) => {
-        const map: Record<string, string> = {
-          n: "\n",
-          r: "\r",
-          t: "\t",
-          b: "\b",
-          f: "\f",
-          "\\": "\\",
-          "(": "(",
-          ")": ")",
-        };
-        return map[c] ?? c;
-      })
-      .replace(/\\([0-7]{1,3})/g, (_m, oct) => String.fromCharCode(parseInt(oct, 8)))
-      .replace(/\\([0-9a-fA-F]{2})/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16)));
-    return s;
+/** تدفقات FlateDecode في PDF بصيغة zlib (RFC 1950) — تختلف عن deflate الخام في ZIP/docx. */
+async function inflateZlib(data: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
+  const blob = new Blob([data]);
+  const stream = blob.stream().pipeThrough(new DecompressionStream("deflate"));
+  const buf = await new Response(stream).arrayBuffer();
+  return new Uint8Array(buf);
+}
+
+/** فك ترميز بايتس كنص لاتيني خام (بايت = رمز) دون تأثر جدول محارف النظام. */
+const decodePdfBytes = (u8: Uint8Array): string => {
+  // TextDecoder بترميز "latin1" يحوّل نطاق 0x80-0x9F إلى رموز مختلفة، لذا نفك يدوياً.
+  const CHUNK = 8192;
+  let out = "";
+  for (let i = 0; i < u8.length; i += CHUNK) {
+    out += String.fromCharCode.apply(
+      null,
+      Array.from(u8.subarray(i, i + CHUNK)) as unknown as number[]
+    );
   }
-  // سلسلة هكس: <hex> — تُفك غالباً كـ UTF-16BE (الشائعة في PDF العربي)
-  if (raw.startsWith("<") && raw.endsWith(">")) {
-    const hex = raw.slice(1, -1).replace(/\s/g, "");
-    if (!hex) return "";
-    const bytes = [];
-    for (let i = 0; i + 1 < hex.length; i += 2) {
-      bytes.push(parseInt(hex.slice(i, i + 2), 16));
-    }
-    return new TextDecoder("utf-16be", { fatal: false }).decode(new Uint8Array(bytes));
-  }
-  return raw;
+  return out;
 };
 
-/** استخراج نصوص من محتوى تدفق صفحة PDF واحد. */
-const extractPageText = (streamBytes: Uint8Array): string => {
-  const text = new TextDecoder("utf-8", { fatal: false }).decode(streamBytes);
-  const parts: string[] = [];
-
-  // مشغل Tj: (نص) Tj
-  const tjRe = /\(([^)]*(?:\\.[^)]*)*)\)\s*Tj/g;
-  let m: RegExpExecArray | null;
-  while ((m = tjRe.exec(text)) !== null) {
-    parts.push(extractStringFromPdf(`(${m[1]})`));
-  }
-
-  // مشغل TJ: [(نص1) (نص2) <hex>] TJ
-  const tjArrayRe = /\[([^\]]*)\]\s*TJ/g;
-  while ((m = tjArrayRe.exec(text)) !== null) {
-    const inner = m[1];
-    const strRe = /\(([^)]*(?:\\.[^)]*)*)\)/g;
-    let sm: RegExpExecArray | null;
-    while ((sm = strRe.exec(inner)) !== null) {
-      parts.push(extractStringFromPdf(`(${sm[1]})`));
-    }
-    // سلاسل هكس داخل المصفوفة
-    const hexRe = /<([0-9a-fA-F\s]*)>/g;
-    let hm: RegExpExecArray | null;
-    while ((hm = hexRe.exec(inner)) !== null) {
-      parts.push(extractStringFromPdf(`<${hm[1]}>`));
-    }
-  }
-
-  return parts.join(" ");
+type PdfObject = {
+  num: number;
+  dictText: string;
+  streamBytes: Uint8Array<ArrayBuffer> | null;
+  flate: boolean;
 };
 
-/*------------------------------------------------------------------------------
-  تحليل كائنات PDF وجدول المراجع (xref)
-------------------------------------------------------------------------------*/
+const isPdfWs = (b: number): boolean =>
+  b === 0x20 || b === 0x09 || b === 0x0a || b === 0x0d || b === 0x0c || b === 0x00;
+const isPdfDigit = (b: number): boolean => b >= 0x30 && b <= 0x39;
 
-/** تقسيم محتوى PDF إلى كائنات بناءً على نمط "numero generazione obj ... endobj". */
-const findObjects = (data: Uint8Array): Array<{ number: number; gen: number; start: number; end: number }> => {
-  const text = new TextDecoder("utf-8", { fatal: false }).decode(data);
-  const objects: Array<{ number: number; gen: number; start: number; end: number }> = [];
-  const objRe = /(\d+)\s+(\d+)\s+obj/g;
-  let match: RegExpExecArray | null;
-  while ((match = objRe.exec(text)) !== null) {
-    const start = match.index;
-    const endText = text.indexOf("endobj", start);
-    if (endText < 0) break;
-    const end = endText + "endobj".length;
-    objects.push({
-      number: parseInt(match[1], 10),
-      gen: parseInt(match[2], 10),
-      start,
-      end,
+const parsePdfDec = (u8: Uint8Array, s: number, e: number): number => {
+  let v = 0;
+  for (let i = s; i < e; i++) v = v * 10 + (u8[i] - 48);
+  return v;
+};
+
+/** مسح الكائنات على مستوى البايتات: الإزاحات دائماً مطابقة للملف الأصلي. */
+const scanPdfObjects = (
+  data: Uint8Array
+): Array<{ num: number; start: number; end: number }> => {
+  const objs: Array<{ num: number; start: number; end: number }> = [];
+  const n = data.length;
+  for (let i = 0; i < n - 3; i++) {
+    if (data[i] !== 0x6f || data[i + 1] !== 0x62 || data[i + 2] !== 0x6a) continue; // "obj"
+    let p = i - 1;
+    while (p >= 0 && isPdfWs(data[p])) p--;
+    const genEnd = p + 1;
+    while (p >= 0 && isPdfDigit(data[p])) p--;
+    const genStart = p + 1;
+    if (genStart >= genEnd) continue;
+    while (p >= 0 && isPdfWs(data[p])) p--;
+    const numEnd = p + 1;
+    while (p >= 0 && isPdfDigit(data[p])) p--;
+    const numStart = p + 1;
+    if (numStart >= numEnd) continue;
+    const end = indexOfBytes(data, ENDOBJ_MARKER, i);
+    if (end < 0) break;
+    objs.push({
+      num: parsePdfDec(data, numStart, numEnd),
+      start: numStart,
+      end: end + ENDOBJ_MARKER.length,
     });
+    i = end + ENDOBJ_MARKER.length - 1;
   }
-  return objects;
+  return objs;
 };
 
-/** العثور على كائن الترويسة (trailer) وتحديد موقع startxref. */
-const findTrailer = (text: string): { startxref: number; size?: number; root?: number } => {
-  const startxrefMatch = text.match(/startxref\s*\n?(\d+)/);
-  const startxref = startxrefMatch ? parseInt(startxrefMatch[1], 10) : -1;
-  const sizeMatch = text.match(/\/\s*Size\s+(\d+)/);
-  const rootMatch = text.match(/\/\s*Root\s+(\d+)\s+\d+\s+R/);
-  return {
-    startxref,
-    size: sizeMatch ? parseInt(sizeMatch[1], 10) : undefined,
-    root: rootMatch ? parseInt(rootMatch[1], 10) : undefined,
-  };
+/** تجهيز كائن واحد: نص القاموس + بايتس التدفق (إن وجد) بدقة /Length. */
+const loadPdfObject = (
+  data: Uint8Array,
+  o: { num: number; start: number; end: number }
+): PdfObject => {
+  const raw = data.slice(o.start, o.end);
+  let streamKw = indexOfBytes(raw, STREAM_MARKER, 0);
+  let dictText: string;
+  let streamBytes: Uint8Array<ArrayBuffer> | null = null;
+  let flate = false;
+
+  // علامة stream الحقيقية تسبقها مسافة/سطر؛ أي تطابق سابق (داخل اسم مثل
+  // /LastModified أو /PageLayout) يُتجاهل ويُبحث عن الموضع الصحيح.
+  if (streamKw > 0 && !isPdfWs(raw[streamKw - 1])) {
+    const retry = indexOfBytes(raw, STREAM_MARKER, streamKw + STREAM_MARKER.length);
+    if (retry >= 0) streamKw = retry;
+  }
+
+  if (streamKw >= 0) {
+    dictText = decodePdfBytes(raw.slice(0, streamKw));
+    let off = streamKw + STREAM_MARKER.length;
+    if (raw[off] === 0x0d) off++;
+    if (raw[off] === 0x0a) off++;
+    let end = indexOfBytes(raw, ENDSTREAM_MARKER, off);
+    if (end < 0) end = raw.length;
+    // سطر الفصل قبل endstream ليس جزءاً من بيانات التدفق
+    while (end > off && (raw[end - 1] === 0x0d || raw[end - 1] === 0x0a || raw[end - 1] === 0x20))
+      end--;
+    streamBytes = raw.slice(off, end);
+    // /Length كرقم مباشر فقط (وليس إحالة) — الدقة المطلقة لبايات zlib
+    const lm = dictText.match(/\/Length\s+(\d+)(?!\d)(?!\s+\d+\s+R)/);
+    if (lm) {
+      const len = +lm[1];
+      if (len > 0 && off + len <= raw.length) {
+        const tail = decodePdfBytes(raw.slice(off + len, off + len + 11));
+        if (/^(\r\n|\r|\n)?endstream/.test(tail)) streamBytes = raw.slice(off, off + len);
+      }
+    }
+    flate = /\/FlateDecode/.test(dictText);
+  } else {
+    dictText = decodePdfBytes(raw);
+  }
+
+  return { num: o.num, dictText, streamBytes, flate };
 };
 
-/** تحليل جدول المراجع (xref) مباشرة إذا كان موجوداً كنص. */
-const parseXrefTable = (text: string): Map<number, number> => {
-  const map = new Map<number, number>();
-  const xrefStart = text.indexOf("xref");
-  if (xrefStart < 0) return map;
-  const section = text.slice(xrefStart);
-  const lines = section.split("\n");
-  let currentObj = -1;
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    if (line === "trailer" || line === "startxref") break;
-    // سطر الأول: "0 5" ثم entrées: "0000000000 00000 n "
-    const objMatch = line.match(/^(\d+)\s+(\d+)$/);
-    if (objMatch) {
-      currentObj = parseInt(objMatch[1], 10);
+/** استخراج كائنات ObjStm (كائنات مضغوطة داخل تدفق واحد — شائعة في PDF 1.5+). */
+const expandObjStreams = async (objs: PdfObject[]): Promise<PdfObject[]> => {
+  const extra: PdfObject[] = [];
+  for (const o of objs) {
+    if (!o.streamBytes || !/\/Type\s*\/ObjStm/.test(o.dictText)) continue;
+    let bytes: Uint8Array<ArrayBuffer>;
+    try {
+      bytes = o.flate ? await inflateZlib(o.streamBytes) : o.streamBytes;
+    } catch {
       continue;
     }
-    const entryMatch = line.match(/^(\d{10})\s+\d{5}\s+[nf]/);
-    if (entryMatch && currentObj >= 0) {
-      map.set(currentObj, parseInt(entryMatch[1], 10));
-      currentObj++;
+    const nM = o.dictText.match(/\/N\s+(\d+)/);
+    const fM = o.dictText.match(/\/First\s+(\d+)/);
+    if (!nM || !fM) continue;
+    const N = +nM[1];
+    const First = +fM[1];
+    const nums = (decodePdfBytes(bytes.slice(0, First)).match(/\d+/g) || []).map(Number);
+    for (let k = 0; k + 1 < nums.length && k / 2 < N; k += 2) {
+      const s = First + nums[k + 1];
+      const e = k + 3 < nums.length ? First + nums[k + 3] : bytes.length;
+      if (s < 0 || e > bytes.length || s >= e) continue;
+      extra.push({
+        num: nums[k],
+        dictText: decodePdfBytes(bytes.slice(s, e)),
+        streamBytes: null,
+        flate: false,
+      });
+    }
+  }
+  return extra;
+};
+
+/** تحليل جدول ToUnicode CMap: beginbfchar / beginbfrange (كلا الشكلين). */
+const parsePdfCMap = (text: string): Map<number, number> => {
+  const map = new Map<number, number>();
+  let cm: RegExpExecArray | null;
+
+  const bfcharRe = /beginbfchar([\s\S]*?)endbfchar/g;
+  while ((cm = bfcharRe.exec(text)) !== null) {
+    const pairRe = /<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>/g;
+    let pm: RegExpExecArray | null;
+    while ((pm = pairRe.exec(cm[1])) !== null) {
+      const code = parseInt(pm[1], 16);
+      const uni = parseInt(pm[2], 16);
+      if (!isNaN(code) && !isNaN(uni)) map.set(code, uni);
+    }
+  }
+
+  const bfrangeRe = /beginbfrange([\s\S]*?)endbfrange/g;
+  while ((cm = bfrangeRe.exec(text)) !== null) {
+    const inner = cm[1];
+    const r1 = /<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>/g;
+    let r: RegExpExecArray | null;
+    while ((r = r1.exec(inner)) !== null) {
+      const s = parseInt(r[1], 16);
+      const e = parseInt(r[2], 16);
+      const base = parseInt(r[3], 16);
+      if (isNaN(s) || isNaN(e) || isNaN(base)) continue;
+      for (let c = s; c <= e && c - s < 65536; c++) map.set(c, base + (c - s));
+    }
+    const r2 = /<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>\s+\[([^\]]*)\]/g;
+    while ((r = r2.exec(inner)) !== null) {
+      const s = parseInt(r[1], 16);
+      const e = parseInt(r[2], 16);
+      const codes = (r[3].match(/<([0-9a-fA-F]+)>/g) || [])
+        .map((h) => parseInt(h.slice(1, -1), 16))
+        .filter((c) => !isNaN(c));
+      for (let i = 0; i < codes.length && s + i <= e; i++) map.set(s + i, codes[i]);
     }
   }
   return map;
 };
 
-/** استخراج بايتات كائن PDF رقمي باستخدام رقمه، مع إرجاع موقع البداية في البيانات الأصلية. */
-const getObjectBytes = (
-  data: Uint8Array,
-  objNum: number,
-): { bytes: Uint8Array; start: number } | null => {
-  const text = new TextDecoder("utf-8", { fatal: false }).decode(data);
-  // يطابق رقم الكائن مع أي رقم جيل (gen)، وليس فقط الصفر
-  const pattern = new RegExp(`${objNum}\\s+\\d+\\s+obj`, "g");
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text)) !== null) {
-    const start = match.index;
-    const endText = text.indexOf("endobj", start);
-    if (endText < 0) break;
-    return { bytes: data.slice(start, endText + "endobj".length), start };
+type PdfFont = { cmap: Map<number, number> | null; twoByte: boolean };
+
+/** بناء خرائط خطوط الصفحة: /Resources → /Font → /ToUnicode لكل خط. */
+const buildPdfFontMaps = async (
+  pageDict: string,
+  byNum: Map<number, PdfObject>
+): Promise<Map<string, PdfFont>> => {
+  let resText = pageDict;
+  const resRef = pageDict.match(/\/Resources\s+(\d+)\s+\d+\s+R/);
+  if (resRef) {
+    const ro = byNum.get(+resRef[1]);
+    if (ro) resText = ro.dictText;
   }
-  return null;
-};
-
-/** استخراج رقم الكائن من إدخال مرجع من نوع R (مثل 5 0 R). */
-const resolveRef = (raw: string): number | null => {
-  const m = raw.match(/(\d+)\s+\d+\s+R/);
-  return m ? parseInt(m[1], 10) : null;
-};
-
-/** استخراج قيمة مفتاح من قاموس PDF (مثل /Contents 5 0 R). */
-const dictGet = (dict: string, key: string): string | null => {
-  const m = dict.match(new RegExp(`/${key}\\s+([^\\s\\n/]+)`));
-  return m ? m[1] : null;
-};
-
-const dictGetRef = (dict: string, key: string): number | null => {
-  const raw = dictGet(dict, key);
-  return raw ? resolveRef(raw) : null;
-};
-
-/*------------------------------------------------------------------------------
-  جدول ToUnicode CMap — يرمز أكواد الحروف (CIDs) إلى يونيكود.
-------------------------------------------------------------------------------*/
-
-type ToUnicodeEntry = { code: number; unicode: number };
-
-/** تحليل جدول ToUnicode من تيار PDF مضغوط أو غير مضغوط. */
-async function parseToUnicodeCMap(
-  data: Uint8Array,
-  objNum: number,
-): Promise<Map<number, number> | null> {
-  const found = getObjectBytes(data, objNum);
-  if (!found) return null;
-
-  const dictText = new TextDecoder("utf-8", { fatal: false }).decode(found.bytes);
-  // التحقق من وجود مفتاح /ToUnicode في القاموس
-  const toUnicodeRef = dictGetRef(dictText, "ToUnicode");
-  if (!toUnicodeRef) return null;
-
-  const toUnicodeObj = getObjectBytes(data, toUnicodeRef);
-  if (!toUnicodeObj) return null;
-
-  // فك ضغط التيار إذا كان مضغوطاً
-  const dictLower = dictText.toLowerCase();
-  const isFlate = /\/filter\s*\/flatdecode/.test(dictLower) || /\/filter\s*\[\s*\/flatdecode/.test(dictLower);
-  let streamBytes: Uint8Array<ArrayBuffer>;
-
-  const dictContent = new TextDecoder("utf-8", { fatal: false }).decode(toUnicodeObj.bytes);
-  const streamStart = indexOfBytes(toUnicodeObj.bytes, STREAM_MARKER);
-  const streamEnd = indexOfBytes(toUnicodeObj.bytes, ENDSTREAM_MARKER);
-  if (streamStart < 0 || streamEnd < 0) return null;
-
-  let offset = streamStart + STREAM_MARKER.length;
-  if (offset < toUnicodeObj.bytes.length && toUnicodeObj.bytes[offset] === 0x0d) offset++;
-  if (offset < toUnicodeObj.bytes.length && toUnicodeObj.bytes[offset] === 0x0a) offset++;
-
-  streamBytes = toUnicodeObj.bytes.slice(offset, streamEnd);
-
-  if (isFlate) {
-    try {
-      streamBytes = await inflateFlate(streamBytes);
-    } catch {
-      return null;
-    }
-  }
-
-  const cmapText = new TextDecoder("utf-8", { fatal: false }).decode(streamBytes);
-  const map = new Map<number, number>();
-
-  // beginbfchar ... endbfchar
-  const bfcharRe = /beginbfchar([\s\S]*?)endbfchar/g;
-  let cm: RegExpExecArray | null;
-  while ((cm = bfcharRe.exec(cmapText)) !== null) {
-    const inner = cm[1];
-    const pairRe = /<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>/g;
-    let pm: RegExpExecArray | null;
-    while ((pm = pairRe.exec(inner)) !== null) {
-      const code = parseInt(pm[1], 16);
-      const unicode = parseInt(pm[2], 16);
-      if (!isNaN(code) && !isNaN(unicode)) map.set(code, unicode);
-    }
-  }
-
-  // beginbfrange ... endbfrange
-  const bfrangeRe = /beginbfrange([\s\S]*?)endbfrange/g;
-  while ((cm = bfrangeRe.exec(cmapText)) !== null) {
-    const inner = cm[1];
-    // شكل 1: <start> <end> <unicode_start>  (نطاق مع بداية يونيكود)
-    const rangeRe1 = /<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>/g;
-    let rm: RegExpExecArray | null;
-    while ((rm = rangeRe1.exec(inner)) !== null) {
-      const start = parseInt(rm[1], 16);
-      const end = parseInt(rm[2], 16);
-      const base = parseInt(rm[3], 16);
-      if (!isNaN(start) && !isNaN(end) && !isNaN(base)) {
-        for (let c = start; c <= end; c++) map.set(c, base + (c - start));
+  const maps = new Map<string, PdfFont>();
+  const fontSec = resText.match(/\/Font\s*<<([\s\S]*?)>>/);
+  if (!fontSec) return maps;
+  const entries = fontSec[1].match(/\/[\w+#-]+\s+\d+\s+\d+\s+R/g) || [];
+  for (const ent of entries) {
+    const rm = ent.match(/(\d+)\s+\d+\s+R/);
+    const keyMatch = ent.match(/\/[\w+#-]+/);
+    if (!rm || !keyMatch) continue;
+    const fontObj = byNum.get(+rm[1]);
+    if (!fontObj) continue;
+    const tuRef = fontObj.dictText.match(/\/ToUnicode\s+(\d+)\s+\d+\s+R/);
+    const twoByte =
+      /\/Subtype\s*\/Type0/.test(fontObj.dictText) ||
+      /Identity-H/.test(fontObj.dictText) ||
+      /Identity-V/.test(fontObj.dictText);
+    let cmap: Map<number, number> | null = null;
+    if (tuRef) {
+      const tuObj = byNum.get(+tuRef[1]);
+      if (tuObj && tuObj.streamBytes) {
+        let bytes: Uint8Array<ArrayBuffer> | null = tuObj.streamBytes;
+        if (tuObj.flate) {
+          try {
+            bytes = await inflateZlib(tuObj.streamBytes);
+          } catch {
+            bytes = null;
+          }
+        }
+        if (bytes) cmap = parsePdfCMap(decodePdfBytes(bytes));
       }
     }
-    // شكل 2: <start> <end> [ <unicode1> <unicode2> ... ]  (قائمة صريحة)
-    const rangeRe2 = /<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>\s+\[([^\]]*)\]/g;
-    while ((rm = rangeRe2.exec(inner)) !== null) {
-      const start = parseInt(rm[1], 16);
-      const end = parseInt(rm[2], 16);
-      const codes = rm[3]
-        .match(/<([0-9a-fA-F]+)>/g)
-        ?.map((h) => parseInt(h.slice(1, -1), 16))
-        .filter((c) => !isNaN(c));
-      if (codes && !isNaN(start) && !isNaN(end)) {
-        for (let i = 0; i < codes.length && start + i <= end; i++) {
-          map.set(start + i, codes[i]);
+    maps.set(keyMatch[0], { cmap, twoByte });
+  }
+  return maps;
+};
+
+/*--------------------------- محلل محتوى الصفحات ---------------------------*/
+
+type PdfToken =
+  | { t: "str"; v: number[] }
+  | { t: "num"; v: number }
+  | { t: "name"; v: string }
+  | { t: "op"; v: string }
+  | { t: "ao" } // فتح مصفوفة [
+  | { t: "ac" } // إغلاق مصفوفة ]
+  | { t: "do" } // فتح قاموس <<
+  | { t: "dc" }; // إغلاق قاموس >>
+
+/** تقطيع تيار محتوى الصفحة إلى رموز (سلاسل، أسماء، أرقام، أوامر). */
+const tokenizePdfContent = (str: string): PdfToken[] => {
+  const toks: PdfToken[] = [];
+  let i = 0;
+  const n = str.length;
+  const isWs = (c: string) => c === " " || c === "\n" || c === "\r" || c === "\t" || c === "\f" || c === "\0";
+  const isDelim = (c: string) => "()<>[]{/%".indexOf(c) >= 0;
+
+  while (i < n) {
+    const c = str[i];
+    if (isWs(c)) {
+      i++;
+      continue;
+    }
+    if (c === "%") {
+      while (i < n && str[i] !== "\n") i++;
+      continue;
+    }
+    if (c === "(") {
+      const bytes: number[] = [];
+      let depth = 1;
+      i++;
+      while (i < n && depth > 0) {
+        const ch = str[i];
+        if (ch === "\\") {
+          const nx = str[i + 1];
+          if (nx === "n") { bytes.push(10); i += 2; }
+          else if (nx === "r") { bytes.push(13); i += 2; }
+          else if (nx === "t") { bytes.push(9); i += 2; }
+          else if (nx === "b") { bytes.push(8); i += 2; }
+          else if (nx === "f") { bytes.push(12); i += 2; }
+          else if (nx === "(") { bytes.push(40); i += 2; }
+          else if (nx === ")") { bytes.push(41); i += 2; }
+          else if (nx === "\\") { bytes.push(92); i += 2; }
+          else if (nx >= "0" && nx <= "7") {
+            let oct = "";
+            let k = i + 1;
+            while (k < n && str[k] >= "0" && str[k] <= "7" && oct.length < 3) {
+              oct += str[k];
+              k++;
+            }
+            bytes.push(parseInt(oct, 8) & 0xff);
+            i = k;
+          } else if (nx === "\n") {
+            i += 2;
+          } else if (nx !== undefined) {
+            bytes.push(nx.charCodeAt(0) & 0xff);
+            i += 2;
+          } else {
+            i++;
+          }
+        } else if (ch === "(") {
+          depth++;
+          bytes.push(40);
+          i++;
+        } else if (ch === ")") {
+          depth--;
+          if (depth > 0) bytes.push(41);
+          i++;
+        } else {
+          bytes.push(ch.charCodeAt(0) & 0xff);
+          i++;
         }
       }
+      toks.push({ t: "str", v: bytes });
+      continue;
+    }
+    if (c === "<" && str[i + 1] === "<") { toks.push({ t: "do" }); i += 2; continue; }
+    if (c === ">" && str[i + 1] === ">") { toks.push({ t: "dc" }); i += 2; continue; }
+    if (c === "<") {
+      let hex = "";
+      i++;
+      while (i < n && str[i] !== ">") {
+        const h = str[i];
+        if (h !== " " && h !== "\n" && h !== "\r" && h !== "\t") hex += h;
+        i++;
+      }
+      i++;
+      if (hex.length % 2) hex += "0";
+      const bytes: number[] = [];
+      for (let k = 0; k < hex.length; k += 2) bytes.push(parseInt(hex.slice(k, k + 2), 16));
+      toks.push({ t: "str", v: bytes });
+      continue;
+    }
+    if (c === "[") { toks.push({ t: "ao" }); i++; continue; }
+    if (c === "]") { toks.push({ t: "ac" }); i++; continue; }
+    if (c === "/") {
+      let name = "/";
+      i++;
+      while (i < n && !isWs(str[i]) && !isDelim(str[i])) { name += str[i]; i++; }
+      toks.push({ t: "name", v: name });
+      continue;
+    }
+    if ((c >= "0" && c <= "9") || c === "-" || c === "+" || c === ".") {
+      let num = "";
+      while (i < n && !isWs(str[i]) && !isDelim(str[i])) { num += str[i]; i++; }
+      toks.push({ t: "num", v: parseFloat(num) || 0 });
+      continue;
+    }
+    let op = "";
+    while (i < n && !isWs(str[i]) && !isDelim(str[i])) { op += str[i]; i++; }
+    toks.push({ t: "op", v: op });
+  }
+  return toks;
+};
+
+/** تحويل سلسلة بايتس إلى نص عبر خريطة ToUnicode الخاصة بخطها الحالي. */
+const decodePdfString = (bytes: number[], font: PdfFont | null): string => {
+  const cmap = font ? font.cmap : null;
+  const two = font ? font.twoByte : false;
+  let s = "";
+  if (two) {
+    for (let i = 0; i + 1 < bytes.length; i += 2) {
+      const code = (bytes[i] << 8) | bytes[i + 1];
+      if (cmap) {
+        const u = cmap.get(code);
+        if (u !== undefined) s += String.fromCharCode(u);
+      }
+    }
+  } else {
+    for (const b of bytes) {
+      if (cmap) {
+        const u = cmap.get(b);
+        if (u !== undefined) {
+          s += String.fromCharCode(u);
+          continue;
+        }
+      }
+      s += String.fromCharCode(b);
     }
   }
+  return s;
+};
 
-  return map.size > 0 ? map : null;
-}
+const isCombiningMark = (ch: string) => /\p{M}/u.test(ch);
 
-/** استخراج أرقام كائنات ToUnicode من الخطوط المستخدمة في صفحة PDF.
-    نبحث عن جميع إحالات الكائنات في نص الصفحة ونتحقق مما إذا كانت كائنات خط تحتوي على /ToUnicode. */
-const findFontToUnicodeRefs = (
-  pageDictText: string,
-  data: Uint8Array,
-): number[] => {
-  const refs: number[] = [];
-  const checked = new Set<number>();
+/** تنفيذ أوامر النص واستخراج السطور بحسب موضع النص الفعلي. */
+const runPdfContent = (str: string, fontMaps: Map<string, PdfFont>): string => {
+  const toks = tokenizePdfContent(str);
+  let out = "";
+  const stack: PdfToken[] = [];
+  let curFont: PdfFont | null = null;
+  let curY: number | null = null;
+  let lastY: number | null = null;
+  let leading = 12;
+  let fontSize = 12;
 
-  // العثور على جميع الإحالات من نوع "الاسم 5 0 R" في نص الصفحة
-  const refRe = /\/\w+\s+(\d+)\s+\d+\s+R/g;
-  let m: RegExpExecArray | null;
-  while ((m = refRe.exec(pageDictText)) !== null) {
-    const objNum = parseInt(m[1], 10);
-    if (checked.has(objNum)) continue;
-    checked.add(objNum);
+  const pushText = (bytes: number[]) => {
+    const s = decodePdfString(bytes, curFont);
+    if (!s) return;
+    // علامات التشكيل تُرسم عند موضع مرفوع — لا تكسر السطر ولا تُحدّد موقعه
+    const markOnly = Array.from(s).every((ch) => isCombiningMark(ch));
+    if (!markOnly) {
+      const sameLine = lastY !== null && curY !== null && Math.abs(curY - lastY) <= 0.6 * fontSize;
+      if (curY !== null && !sameLine) {
+        if (out.length && !out.endsWith("\n")) out += "\n";
+        lastY = curY;
+      }
+    }
+    out += s;
+  };
 
-    const fontObj = getObjectBytes(data, objNum);
-    if (!fontObj) continue;
-    const fontText = new TextDecoder("utf-8", { fatal: false }).decode(fontObj.bytes);
-    if (!fontText.includes("/ToUnicode")) continue;
+  let dictDepth = 0;
+  for (const tk of toks) {
+    if (tk.t === "do") { dictDepth++; stack.push(tk); continue; }
+    if (tk.t === "dc") {
+      dictDepth--;
+      while (stack.length && stack[stack.length - 1].t !== "do") stack.pop();
+      stack.pop();
+      continue;
+    }
+    if (tk.t !== "op") { stack.push(tk); continue; }
+    if (dictDepth > 0) continue;
 
-    const tuRef = dictGetRef(fontText, "ToUnicode");
-    if (tuRef) refs.push(tuRef);
+    const op = tk.v;
+    const top = (k: number) => stack[stack.length - k];
+    switch (op) {
+      case "BT":
+        curY = 0;
+        lastY = null;
+        break;
+      case "ET":
+        curY = null;
+        lastY = null;
+        break;
+      case "TL": {
+        const t = top(1);
+        if (t && t.t === "num") leading = t.v;
+        break;
+      }
+      case "Tf": {
+        if (stack.length >= 2) {
+          const fname = top(2);
+          const fsize = top(1);
+          if (fname && fname.t === "name") curFont = fontMaps.get(fname.v) || null;
+          if (fsize && fsize.t === "num" && fsize.v) fontSize = fsize.v;
+        }
+        break;
+      }
+      case "Td":
+      case "TD": {
+        if (stack.length >= 2) {
+          const ty = top(1);
+          if (ty && ty.t === "num") {
+            if (op === "TD") leading = -ty.v;
+            if (curY !== null) curY = curY + ty.v;
+          }
+        }
+        break;
+      }
+      case "Tm": {
+        if (stack.length >= 6) {
+          const f = top(1);
+          if (f && f.t === "num") curY = f.v;
+        }
+        break;
+      }
+      case "T*":
+        if (curY !== null) curY = curY - leading;
+        break;
+      case "Tj": {
+        const t = top(1);
+        if (t && t.t === "str") pushText(t.v);
+        break;
+      }
+      case "'":
+        if (curY !== null) curY = curY - leading;
+        {
+          const t = top(1);
+          if (t && t.t === "str") pushText(t.v);
+        }
+        break;
+      case '"': {
+        if (stack.length >= 3) {
+          const aw = top(3);
+          if (aw && aw.t === "num") leading = aw.v;
+          if (curY !== null) curY = curY - leading;
+          const t = top(1);
+          if (t && t.t === "str") pushText(t.v);
+        }
+        break;
+      }
+      case "TJ": {
+        const t = top(1);
+        if (t && t.t === "ac") {
+          let idx = stack.length - 2;
+          const items: PdfToken[] = [];
+          while (idx >= 0 && stack[idx].t !== "ao") {
+            items.unshift(stack[idx]);
+            idx--;
+          }
+          for (const it of items) if (it.t === "str") pushText(it.v);
+        }
+        break;
+      }
+      default:
+        break;
+    }
+    stack.length = 0;
   }
-  return refs;
+  return out;
+};
+
+/*--------------------- معالجة الاتجاه العربي في النص ---------------------*/
+
+const isRtlChar = (ch: string): boolean => {
+  const c = ch.codePointAt(0) || 0;
+  return (
+    (c >= 0x0590 && c <= 0x08ff) || // عبري/عربي ونطاقاته
+    (c >= 0xfb1d && c <= 0xfdff) ||
+    (c >= 0xfe70 && c <= 0xfeff) // الأشكال العرضية للحروف العربية
+  );
+};
+
+/** عكس سطر مخزناً بالترتيب البصري: الوحدة = حرف + علاماته الملتصقة. */
+const reverseRtlLine = (line: string): string => {
+  const units: Array<{ base: string; marks: string }> = [];
+  for (const ch of line) {
+    if (isCombiningMark(ch)) {
+      const last = units[units.length - 1];
+      if (last && last.base) last.marks += ch;
+      else if (last) last.marks += ch;
+      else units.push({ base: "", marks: ch });
+      continue;
+    }
+    const last = units[units.length - 1];
+    if (last && !last.base && last.marks) last.base = ch; // علامة قبل حرفها (بصري معكوس)
+    else units.push({ base: ch, marks: "" });
+  }
+  return units
+    .map((u) => u.base + u.marks)
+    .reverse()
+    .join("");
+};
+
+/** عكس الأسطر العربية وتوحيد الأشكال العرضية + إهمال محارف التحكم. */
+const fixPdfRtlText = (text: string): string =>
+  text
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+    .split("\n")
+    .map((line) => {
+      let rtl = 0;
+      let total = 0;
+      for (const ch of line) {
+        if (/\s/.test(ch)) continue;
+        total++;
+        if (isRtlChar(ch)) rtl++;
+      }
+      const out = rtl > 0 && rtl * 3 >= total ? reverseRtlLine(line) : line;
+      return out.normalize("NFKC");
+    })
+    .join("\n");
+
+/*--------------------------- شجرة الصفحات ---------------------------*/
+
+const findPdfPages = (byNum: Map<number, PdfObject>): number[] => {
+  for (const o of byNum.values()) {
+    if (/\/Type\s*\/Pages(?![a-zA-Z])/.test(o.dictText)) {
+      const km = o.dictText.match(/\/Kids\s*\[([\s\S]*?)\]/);
+      if (km) {
+        const refs = km[1].match(/\d+\s+\d+\s+R/g) || [];
+        const nums = refs.map((r) => parseInt(r, 10)).filter((x) => !isNaN(x));
+        if (nums.length) return nums;
+      }
+    }
+  }
+  const fallback: number[] = [];
+  for (const o of byNum.values()) {
+    if (/\/Type\s*\/Page(?![a-zA-Z])/.test(o.dictText)) fallback.push(o.num);
+  }
+  return fallback;
 };
 
 /*------------------------------------------------------------------------------
@@ -455,141 +748,61 @@ async function readPdfFile(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
   const data = new Uint8Array(arrayBuffer);
 
-  // التحقق من رأس PDF
-  const header = new TextDecoder("ascii").decode(data.slice(0, 5));
-  if (!header.startsWith("%PDF-")) {
+  if (decodePdfBytes(data.slice(0, 5)) !== "%PDF-") {
     throw new Error("الملف ليس صيغة PDF صالحة.");
   }
 
-  const fullText = new TextDecoder("utf-8", { fatal: false }).decode(data);
-  const trailer = findTrailer(fullText);
-  const objects = findObjects(data);
+  const objs = scanPdfObjects(data).map((o) => loadPdfObject(data, o));
+  const extras = await expandObjStreams(objs);
+  const byNum = new Map<number, PdfObject>();
+  for (const o of objs) byNum.set(o.num, o);
+  for (const o of extras) if (!byNum.has(o.num)) byNum.set(o.num, o);
 
-  // العثور على كتالوج الجذر وصفحاته
-  let rootObjNum = trailer.root;
-  if (!rootObjNum && objects.length > 0) {
-    rootObjNum = objects[0].number;
-  }
-
-  // البحث عن كائن Pages من خلال遍历 الكائنات
-  let pagesObjNum: number | null = null;
-  for (const obj of objects) {
-    const raw = new TextDecoder("utf-8", { fatal: false }).decode(
-      data.slice(obj.start, obj.end)
-    );
-    if (raw.includes("/Type") && raw.includes("/Pages")) {
-      pagesObjNum = obj.number;
-      break;
-    }
-  }
-
-  // استخراج أعداد الصفحات من كائن Pages
-  let kids: number[] = [];
-  if (pagesObjNum) {
-    const pagesRaw = getObjectBytes(data, pagesObjNum);
-    if (pagesRaw) {
-      const pagesText = new TextDecoder("utf-8", { fatal: false }).decode(pagesRaw.bytes);
-      const kidsMatch = pagesText.match(/\/Kids\s*\[([^\]]+)\]/);
-      if (kidsMatch) {
-        kids = kidsMatch[1]
-          .split(/\s+/)
-          .map((t) => t.trim())
-          .filter(Boolean)
-          .map((t) => resolveRef(t))
-          .filter((n): n is number => n !== null);
-      }
-    }
-  }
-
-  // إذا لم نجد Kids عبر القاموس، نبحث عن جميع الكائنات من نوع /Page
-  if (kids.length === 0) {
-    for (const obj of objects) {
-      const raw = new TextDecoder("utf-8", { fatal: false }).decode(
-        data.slice(obj.start, obj.end)
-      );
-      if (raw.includes("/Type") && raw.includes("/Page")) {
-        kids.push(obj.number);
-      }
-    }
-  }
-
-  // استخراج نص كل صفحة
+  const kids = findPdfPages(byNum);
   const pageTexts: string[] = [];
+
   for (const pageNum of kids) {
-    const pageRaw = getObjectBytes(data, pageNum);
-    if (!pageRaw) continue;
-    const pageText = new TextDecoder("utf-8", { fatal: false }).decode(pageRaw.bytes);
+    const page = byNum.get(pageNum);
+    if (!page) continue;
+    const fontMaps = await buildPdfFontMaps(page.dictText, byNum);
 
-    const contentsRef = dictGetRef(pageText, "Contents");
-    if (!contentsRef) continue;
+    // /Contents: إحالة واحدة أو مصفوفة تدفقات
+    const contentNums: number[] = [];
+    const cRef = page.dictText.match(/\/Contents\s+(\d+)\s+\d+\s+R/);
+    if (cRef) contentNums.push(+cRef[1]);
+    const cArr = page.dictText.match(/\/Contents\s*\[([\s\S]*?)\]/);
+    if (cArr) {
+      for (const r of cArr[1].match(/\d+\s+\d+\s+R/g) || []) contentNums.push(parseInt(r, 10));
+    }
 
-    const contentRaw = getObjectBytes(data, contentsRef);
-    if (!contentRaw) continue;
-
-    // استخراج بايتات التدفق بين stream و endstream (في بايتات المحتوى نفسها، وليس البيانات الأصلية)
-    const streamStart = indexOfBytes(contentRaw.bytes, STREAM_MARKER);
-    const streamEnd = indexOfBytes(contentRaw.bytes, ENDSTREAM_MARKER);
-    if (streamStart < 0 || streamEnd < 0) continue;
-
-    let offset = streamStart + STREAM_MARKER.length;
-    if (offset < contentRaw.bytes.length && contentRaw.bytes[offset] === 0x0d) offset++;
-    if (offset < contentRaw.bytes.length && contentRaw.bytes[offset] === 0x0a) offset++;
-
-    let streamBytes = contentRaw.bytes.slice(offset, streamEnd);
-
-    // التحقق من فلتر الضغط
-    const contentDict = new TextDecoder("utf-8", { fatal: false }).decode(contentRaw.bytes);
-    const isFlate =
-      /\/Filter\s*\/FlateDecode/.test(contentDict) ||
-      /\/Filter\s*\[\s*\/FlateDecode/.test(contentDict);
-
-    if (isFlate) {
-      try {
-        streamBytes = await inflateFlate(streamBytes);
-      } catch {
-        // لو فشل فك الضغط، نحاول استخدام البايتات الخام
+    let pageText = "";
+    for (const cn of contentNums) {
+      const co = byNum.get(cn);
+      if (!co || !co.streamBytes) continue;
+      let bytes: Uint8Array<ArrayBuffer> = co.streamBytes;
+      if (co.flate) {
+        try {
+          bytes = await inflateZlib(co.streamBytes);
+        } catch {
+          continue;
+        }
       }
+      pageText += runPdfContent(decodePdfBytes(bytes), fontMaps) + "\n";
     }
-
-    // بناء خريطة ToUnicode للصفحة إذا وجدنا خطوطاً بها
-    const toUnicodeRefs = findFontToUnicodeRefs(pageText, data);
-    let toUnicodeMap: Map<number, number> | null = null;
-    if (toUnicodeRefs.length > 0) {
-      // نستخدم أول خريطة وُجدت (غالباً خط واحد في الصفحة)
-      toUnicodeMap = await parseToUnicodeCMap(data, toUnicodeRefs[0]);
-    }
-
-    let pageTextExtracted = extractPageText(streamBytes);
-
-    // تطبيق خريطة ToUnicode إذا كانت متاحة
-    if (toUnicodeMap && toUnicodeMap.size > 0) {
-      pageTextExtracted = applyToUnicodeMap(pageTextExtracted, toUnicodeMap);
-    }
-
-    if (pageTextExtracted.trim()) {
-      pageTexts.push(pageTextExtracted);
-    }
+    if (pageText.trim()) pageTexts.push(pageText.trim());
   }
 
-  const joined = pageTexts.join("\n").trim();
+  const joined = fixPdfRtlText(pageTexts.join("\n")).trim();
   if (joined.length === 0) {
     throw new Error(
-      "لم يتم العثور على نص في ملف الـ PDF. قد يكون الملف ممسوحاً ضوئياً (صور فقط) — يرجى نسخ النص ولصقه مباشرة بدلاً من رفع الملف."
+      "لم يتم العثور على نص في ملف الـ PDF.
+السبب الأرجح: الملف ممسوح ضوئياً (صور صفحات فقط) فلا يحتوي نصاً قابلاً للقراءة.
+الحل: انسخ نص الأسئلة من الملف يدوياً والصقه في مربع النص أدناه، أو احفظه كملف Word (.docx) أو نص (.txt) ثم استورده من هنا."
     );
   }
   return joined;
 }
 
-/** تطبيق خريطة ToUnicode على نص مستخرج: استبدال كل رمز برقم يونيكود مطابق. */
-function applyToUnicodeMap(text: string, map: Map<number, number>): string {
-  let result = "";
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    const mapped = map.get(code);
-    result += mapped !== undefined ? String.fromCharCode(mapped) : text[i];
-  }
-  return result;
-}
 
 /*==============================================================================
   واجهة reading الموحدة
