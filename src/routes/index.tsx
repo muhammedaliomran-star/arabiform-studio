@@ -128,8 +128,10 @@ function HomePage() {
     const texts = questions.filter((q) => q.type === "text").length;
     const qsCount = questions.length - texts;
     const textNote = texts > 0 ? ` + ${texts} نص وصفي (مقروءة)` : "";
+    // ذكر تفعيل وضع الاختبار يظهر دائماً عند وجود إجابة صحيحة واحدة على الأقل
+    const quizNote = hasCorrect ? " ووضع الاختبار مفعّل" : "";
     const correctNote = hasCorrect
-      ? ` — ${withCorrect} إجابة صحيحة محددة تلقائياً${active && !active.isQuiz ? " ووضع الاختبار مفعّل" : ""}`
+      ? ` — ${withCorrect} إجابة صحيحة محددة تلقائياً${quizNote}`
       : "";
     if (active) {
       // أضف الأسئلة المستوردة إلى نهاية النموذج النشط
@@ -151,7 +153,9 @@ function HomePage() {
         questions,
         updatedAt: Date.now(),
       });
-      toast.success(`تم إنشاء نموذج من ${qsCount} سؤالاً${textNote}${correctNote}`);
+      toast.success(`تم إنشاء نموذج من ${qsCount} سؤالاً${textNote}${correctNote}`, {
+        duration: 8000,
+      });
     }
     setDocImportOpen(false);
   };
