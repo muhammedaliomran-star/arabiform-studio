@@ -438,11 +438,20 @@ function buildForm() {
           Logger.log("تعذر نسخ قاعدة التحقق للسؤال: " + title);
         }
       }
-      if (q.description && typeof item.setHelpText === "function") {
-        var prev = typeof item.getHelpText === "function" ? item.getHelpText() : "";
-        var help = prev ? prev + "\\n" + q.description : q.description;
+      // النص الوصفي/وصف السؤال: أقسام Google Forms تدعم setDescription، والأسئلة setHelpText
+      if (q.description) {
+        var help = q.description;
         if (imgNote) help += "\\n" + imgNote;
-        item.setHelpText(help);
+        try {
+          if (typeof item.setDescription === "function") {
+            item.setDescription(help);
+          } else if (typeof item.setHelpText === "function") {
+            var prev = typeof item.getHelpText === "function" ? item.getHelpText() : "";
+            item.setHelpText(prev ? prev + "\\n" + help : help);
+          }
+        } catch (de) {
+          Logger.log("تعذر حفظ الوصف للسؤال: " + title);
+        }
       } else if (imgNote && typeof item.setHelpText === "function") {
         item.setHelpText(imgNote);
       }

@@ -155,6 +155,18 @@ function Split-TitleOption([string]$s) {
     return [pscustomobject]@{ before = $before; option = $tail; highlighted = $hl }
 }
 
+function Test-PassageBody([string]$s) {
+    # mirrors isPassageBody in doc-parser.ts (normalize: tatweel/harakat removed, spaces collapsed)
+    $t = $s -replace '[\u064B-\u0652\u0610-\u061A]', '' -replace '\s+', ' '
+    $t = $t.Trim()
+    if ($t.Length -lt 35) { return $false }
+    if ($t -cmatch '^[?\u061F]') { return $false }
+    if ($t -cmatch '[?\u061F]\s*$') { return $false }
+    if ($t -cmatch '^(?:[\u0660-\u0669]{1,2}|[0-9]{1,2})[\-\.\)\uFF1D\uFF1A:]') { return $false }
+    if ($t -cmatch '^[\u0660-\u06690-9]{1,2}\s*[\u0621-\u064A]') { return $false }
+    return $true
+}
+
 function Parse-DocText([string]$raw) {
     # tatweel removal happens on the raw text (mirrors TS)
     $raw = $raw.Replace([string][char]0x0640, '')
@@ -170,25 +182,41 @@ function Parse-DocText([string]$raw) {
     $n = $lines.Count
     $qnum = 0
     $i = 0
-    $inPassage = $false
 
     while ($i -lt $n) {
         $cur = $lines[$i]
         $curClean = Strip-HL $cur
         if ($curClean.Length -eq 0) { $i++; continue }
 
-        # start of an intro/passage block ("■ نص (العنوان)")
-        if (Test-PassageStart $curClean) { $inPassage = $true; $i++; continue }
+        # start of an intro/passage block ("■ نص (العنوان)") -> kept as descriptive text (no answer)
+        if (Test-PassageStart $curClean) {
+            $passageTitle = $curClean -replace '^[\u25A0\u25AA\u25CF\u2605\u2610\u25FC]\s*', ''
+            $passageTitle = $passageTitle.Trim()
+            $i++
+            $paragraphs = New-Object System.Collections.ArrayList
+            while ($i -lt $n) {
+                $pClean = Strip-HL $lines[$i]
+                if ($pClean.Length -eq 0) { $i++; continue }
+                if ((Test-QuestionNumberLine $pClean) -or (Test-PassageStart $pClean) -or (Test-SectionHeader $pClean)) { break }
+                $pContent = (Strip-SourceNumber $pClean).Trim()
+                if (Test-PassageBody $pContent) { [void]$paragraphs.Add($pContent) }
+                $i++
+            }
+            if ($paragraphs.Count -gt 0) {
+                [void]$blocks.Add([pscustomobject]@{
+                    kind    = 'text'
+                    title   = $passageTitle
+                    options = @()
+                    correct = @()
+                    text    = ($paragraphs -join "`n")
+                })
+            }
+            continue
+        }
 
         $cleanTitle = Strip-SourceNumber $curClean
         $numberedLine = Test-QuestionNumberLine $curClean
-        if ((Test-SectionHeader $curClean) -or (Test-SectionHeader $cleanTitle)) { $inPassage = $false; $i++; continue }
-
-        # inside a passage block: skip prose paragraphs until the next numbered question
-        if ($inPassage) {
-            if ($numberedLine) { $inPassage = $false }
-            else { $i++; continue }
-        }
+        if ((Test-SectionHeader $curClean) -or (Test-SectionHeader $cleanTitle)) { $i++; continue }
 
         $options = New-Object System.Collections.ArrayList
         $correct = New-Object System.Collections.ArrayList
@@ -240,8 +268,13 @@ function Parse-DocText([string]$raw) {
 
         if (Test-OptionPrefix $curClean) { $i++; continue }
 
-        # unnumbered long prose (intro/reading text) is never a question
+        # unnumbered long prose (intro/reading text): kept as descriptive text block
         if ((-not $numberedLine) -and (-not (Test-AnswerBlank $cleanTitle))) {
+            if (Test-PassageBody $cleanTitle) {
+                [void]$blocks.Add([pscustomobject]@{ kind = 'text'; title = ''; options = @(); correct = @(); text = $cleanTitle })
+                $i++
+                continue
+            }
             if ($cleanTitle.Length -ge $PROSE_HARD) { $i++; continue }
             if (($cleanTitle.Length -ge $PROSE_SOFT) -and ($cleanTitle -cnotmatch '[\u061F?]\s*[!.]?\s*$')) { $i++; continue }
         }
@@ -339,7 +372,7 @@ $sc = Get-Content 'D:\stararabiform\test-scenarios.txt' -Raw -Encoding UTF8
 $b3 = Parse-DocText $sc
 Show-Blocks 'scenarios' $b3
 
-Check 'scenarios -> 9 questions' ($b3.Count -eq 9) ('got ' + $b3.Count)
+Check 'scenarios -> 11 blocks (9 questions + 2 descriptive texts)' ($b3.Count -eq 11) ('got ' + $b3.Count)
 if ($b3.Count -ge 9) {
     Check 'S-A digit+space question + 4 options' (($b3[0].title -match '^1\. ') -and ($b3[0].options.Count -eq 4)) $b3[0].title
     Check 'S-B "V.1" question, number stripped' (($b3[1].title -match '^2\. ') -and ($b3[1].options.Count -eq 4)) $b3[1].title
@@ -361,21 +394,29 @@ if ($b3.Count -ge 6) {
     Check 'S-F glued (A) split: becomes the first option' ($firstOpt -eq $paper) ($firstOpt + ' / ' + ($b3[5].options -join ' | '))
     Check 'S-F has 4 options total' ($b3[5].options.Count -eq 4) ($b3[5].options -join ' | ')
 }
-if ($b3.Count -ge 9) {
-    # P-A: passage block "■ نص (...)" -> its prose is NOT a question
-    Check 'P-A passage block yields the numbered question only' (($b3[6].kind -eq 'radio') -and ($b3[6].options.Count -eq 4)) ($b3[6].kind + ' / ' + ($b3[6].options -join ' | '))
-    Check 'P-A passage question title has no marker and is short' (($b3[6].title.Length -lt 60) -and ($b3[6].title -cnotmatch '[\u25A0\u25AA\u25CF]')) $b3[6].title
+if ($b3.Count -ge 11) {
+    # P-A: passage block "■ نص (...)" -> kept as a descriptive text block (no answer)
+    Check 'P-A passage became a text block' (($b3[6].kind -eq 'text') -and ($b3[6].options.Count -eq 0)) ($b3[6].kind + ' / ' + ($b3[6].options -join ' | '))
+    Check 'P-A passage title has no marker' ($b3[6].title -cnotmatch '[\u25A0\u25AA\u25CF]') $b3[6].title
+    Check 'P-A passage text keeps both paragraphs' (($b3[6].text -split "`n").Count -eq 2 -and $b3[6].text.Length -gt 300) ('len=' + $b3[6].text.Length)
+    Check 'P-A passage text keeps its content' ($b3[6].text -cmatch '\u0627\u0644\u0642\u0645\u0631') ''
+
+    # the numbered question after the passage is still parsed normally
+    Check 'P-A passage question kept (radio + 4 options)' (($b3[7].kind -eq 'radio') -and ($b3[7].options.Count -eq 4)) ($b3[7].kind + ' / ' + ($b3[7].options -join ' | '))
+    Check 'P-A passage question title has no marker and is short' (($b3[7].title.Length -lt 60) -and ($b3[7].title -cnotmatch '[\u25A0\u25AA\u25CF]')) $b3[7].title
     $twelve = U 0x0661,0x0662,0x20,0x0645,0x0631,0x0629
     $pfirst = ''
-    if ($b3[6].options.Count -gt 0) { $pfirst = $b3[6].options[0] }
-    Check 'P-A first option is the (A) text' ($pfirst -eq $twelve) ($pfirst + ' / ' + ($b3[6].options -join ' | '))
+    if ($b3[7].options.Count -gt 0) { $pfirst = $b3[7].options[0] }
+    Check 'P-A first option is the (A) text' ($pfirst -eq $twelve) ($pfirst + ' / ' + ($b3[7].options -join ' | '))
 
-    # unmarked long prose paragraph is dropped
+    # unmarked long prose paragraph is preserved as a descriptive text block
+    Check 'P-B unmarked prose kept as text block' (($b3[8].kind -eq 'text') -and ($b3[8].text.Length -gt 100)) ($b3[8].kind + ' len=' + $b3[8].text.Length)
+
     # numbered long short-answer question is kept
-    Check 'P-B long numbered short-answer question kept' (($b3[7].kind -eq 'short') -and ($b3[7].title -cmatch '^8\. ') -and ($b3[7].title.Length -gt 90)) ($b3[7].kind + ' len=' + $b3[7].title.Length + ' / ' + $b3[7].title)
+    Check 'P-C long numbered short-answer question kept' (($b3[9].kind -eq 'short') -and ($b3[9].title -cmatch '^8\. ') -and ($b3[9].title.Length -gt 90)) ($b3[9].kind + ' len=' + $b3[9].title.Length + ' / ' + $b3[9].title)
 
     # short unnumbered question ending with ? is kept
-    Check 'P-C short question with ? kept' (($b3[8].kind -eq 'short') -and ($b3[8].title -cmatch '^9\. ')) ($b3[8].title)
+    Check 'P-D short question with ? kept' (($b3[10].kind -eq 'short') -and ($b3[10].title -cmatch '^9\. ')) ($b3[10].title)
 }
 $noPassage = $true
 foreach ($b in $b3) { if ($b.title -cmatch '[\u25A0\u25AA\u25CF\u2605]') { $noPassage = $false } }
@@ -473,6 +514,75 @@ if (Test-Path $realDocx) {
 }
 else {
     Write-Host '===== TEST 5b skipped (real docx not present) ====='
+}
+
+# =================================================================== TEST 6
+# reading passages ("■ نص (...)") must be kept as descriptive text blocks
+$passageDocx = $env:PASSAGE_DOCX
+if (-not $passageDocx) {
+    # ابحث في التنزيلات عن ملف وورد يحوي علامة مقروءة (■) — تخطي إن لم يوجد
+    $dl = Join-Path $env:USERPROFILE 'Downloads'
+    if (Test-Path $dl) {
+        foreach ($f in (Get-ChildItem $dl -Filter '*.docx' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
+            try {
+                $fsT = [System.IO.File]::Open($f.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                $zipT = New-Object System.IO.Compression.ZipArchive($fsT, [System.IO.Compression.ZipArchiveMode]::Read)
+                $eT = $zipT.Entries | Where-Object { $_.FullName -eq 'word/document.xml' }
+                if ($eT) {
+                    $sr = New-Object System.IO.StreamReader($eT.Open(), [System.Text.Encoding]::UTF8)
+                    $head = $sr.ReadToEnd(); $sr.Close()
+                    if ($head.IndexOf([string][char]0x25A0) -ge 0) { $passageDocx = $f.FullName; $zipT.Dispose(); $fsT.Close(); break }
+                }
+                $zipT.Dispose(); $fsT.Close()
+            } catch { }
+        }
+    }
+}
+if ($passageDocx -and (Test-Path $passageDocx)) {
+    Write-Host '===== TEST 6 : reading passages kept as descriptive text ====='
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    # الملف قد يكون مفتوحاً في Word الآن — اقرأه بمشاركة القراءة
+    $fs6 = [System.IO.File]::Open($passageDocx, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    $zip6 = New-Object System.IO.Compression.ZipArchive($fs6, [System.IO.Compression.ZipArchiveMode]::Read)
+    $entry6 = $zip6.Entries | Where-Object { $_.FullName -eq 'word/document.xml' }
+    $ms6 = New-Object System.IO.MemoryStream
+    $st6 = $entry6.Open(); $st6.CopyTo($ms6); $st6.Close()
+    $xml6 = [System.Text.Encoding]::UTF8.GetString($ms6.ToArray())
+    $zip6.Dispose(); $fs6.Close()
+
+    $markerCount = ([regex]::Matches($xml6, '[\u25A0\u25AA\u25CF\u2605]')).Count
+    $hl6 = ([regex]::Matches($xml6, '\[\[HL\]\]')).Count
+    $b6 = Parse-DocText ((Get-XmlLines $xml6) -join "`n")
+    $texts6 = @($b6 | Where-Object { $_.kind -eq 'text' })
+    $qs6 = @($b6 | Where-Object { $_.kind -ne 'text' })
+    $ok6 = @($qs6 | Where-Object { $_.correct -and $_.correct.Count -gt 0 })
+    Write-Host ('--- passages file: ' + $markerCount + ' markers, ' + $hl6 + ' highlights -> ' + $texts6.Count + ' text blocks, ' + $qs6.Count + ' questions, ' + $ok6.Count + ' with correct ---')
+    Check 'P6: file contains passage markers' ($markerCount -ge 1) ('got ' + $markerCount)
+    Check 'P6: passages became descriptive text blocks' ($texts6.Count -ge 1) ('got ' + $texts6.Count)
+    # نصوص وصفية حقيقية: فقرة واحدة على الأقل طويلة، ولا نص وصفي يحمل خيارات
+    $longProse = 0
+    $anyTitle = $false
+    $noOptions = $true
+    foreach ($t in $texts6) {
+        if ($t.text.Length -ge 80) { $longProse++ }
+        if ($t.title.Length -gt 0) { $anyTitle = $true }
+        if ($t.options.Count -ne 0) { $noOptions = $false }
+    }
+    Check 'P6: passage blocks carry real prose (at least one >=80 chars)' ($longProse -ge 1) ('got ' + $longProse)
+    Check 'P6: passage blocks never carry options' $noOptions ''
+    Check 'P6: passage titles captured (heading without marker)' $anyTitle ''
+    Check 'P6: questions still parsed normally' ($qs6.Count -ge 5) ('got ' + $qs6.Count)
+    if ($hl6 -ge 1) {
+        Check 'P6: highlighted answers still detected on questions' ($ok6.Count -ge 1) ($ok6.Count + ' of ' + $qs6.Count)
+    }
+    else {
+        Write-Host 'P6: no highlights in this file (answer-key check skipped)'
+    }
+    $textsWithKey = @($texts6 | Where-Object { $_.correct -and $_.correct.Count -gt 0 }).Count
+    Check 'P6: passage blocks never carry an answer key' ($textsWithKey -eq 0) ('got ' + $textsWithKey)
+}
+else {
+    Write-Host '===== TEST 6 skipped (passage docx not present) ====='
 }
 
 Write-Host ''

@@ -11,6 +11,8 @@ export type ParsedBlock = {
   options: string[];
   /** الإجابة الصحيحة المقترحة إن وجدت (يترك فارغاً لو غير متأكد) */
   correct?: string[];
+  /** نص المقروءة/الفقرة التمهيدية (نوع "text" فقط) */
+  text?: string;
   /** هل السؤال مطلوب */
   required: boolean;
 };
@@ -22,6 +24,17 @@ function normalizeArabic(s: string): string {
     .replace(/[\u064B-\u0652\u0610-\u061A]/g, "") // harakat / diacritics
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/** فقرة نثر تمهيدي (مقروءة) — تُحفظ كنص وصفي بدون إجابة بدل تجاهلها */
+function isPassageBody(s: string): boolean {
+  const t = normalizeArabic(s);
+  if (t.length < 35) return false;
+  // ليس سؤالاً ولا خياراً مرقّماً ولا استفهامياً
+  if (/^[؟?]/.test(t) || /[؟?]\s*$/.test(t)) return false;
+  if (/^(?:[\u0660-\u0669]{1,2}|\d{1,2})[\-\.\)\uFF1D\uFF1A:]/.test(t)) return false;
+  if (/^[\u0660-\u0669\d]{1,2}[\s]*[\u0621-\u064A]/.test(t)) return false;
+  return true;
 }
 
 /** سطر طويل يُحتمل أنه سؤال (يحتوي على علامات استفهام أو استفهام ضمني) */
@@ -166,8 +179,6 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
   let i = 0;
   let questionNumber = 0;
-  // هل نحن داخل كتلة نص تمهيدي (مقروءات)؟
-  let inPassage = false;
 
   /**
    * فصل خيار (أ) الملتحم بنهاية سطر السؤال — شائع في أسئلة التناظر اللفظي:
@@ -197,10 +208,38 @@ export function parseDocText(raw: string): ParsedBlock[] {
     const curClean = stripHL(cur);
     if (!curClean) { i++; continue; }
 
-    // بداية كتلة نص تمهيدي (مقروءات): "■ نص (الأرض والقمر)" — العنوان ليس سؤالاً
+    // بداية كتلة نص تمهيدي (مقروءات): "■ نص (الأرض والقمر)" — تُحفظ كنص وصفي بدون إجابة
     if (PASSAGE_MARK_RE.test(curClean) || PASSAGE_TITLE_RE.test(curClean)) {
-      inPassage = true;
+      const passageTitle = curClean
+        .replace(/^[\u25A0\u25AA\u25CF\u2605\u2610\u25FC]\s*/, "")
+        .trim();
       i++;
+      // اجمع فقرات المقروءة حتى السؤال المرقّم التالي أو بداية قسم/مقروءة جديدة
+      const paragraphs: string[] = [];
+      while (i < n) {
+        const pClean = stripHL(lines[i]);
+        if (!pClean) { i++; continue; }
+        if (
+          isQuestionNumberLine(pClean) ||
+          PASSAGE_MARK_RE.test(pClean) ||
+          PASSAGE_TITLE_RE.test(pClean) ||
+          isSectionHeader(pClean)
+        ) {
+          break;
+        }
+        const pContent = stripSourceNumber(pClean).trim();
+        if (isPassageBody(pContent)) paragraphs.push(pContent);
+        i++;
+      }
+      if (paragraphs.length) {
+        blocks.push({
+          kind: "text",
+          title: passageTitle,
+          options: [],
+          required: false,
+          text: paragraphs.join("\n"),
+        });
+      }
       continue;
     }
 
@@ -208,13 +247,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
     const numberedLine = isQuestionNumberLine(curClean);
 
     // section header lines are never questions
-    if (isSectionHeader(curClean) || isSectionHeader(cleanTitle)) { inPassage = false; i++; continue; }
-
-    // داخل كتلة نص تمهيدي: تُتجاهل الفقرات (نثر تعليمي) حتى السؤال المرقّم التالي
-    if (inPassage) {
-      if (numberedLine) inPassage = false;
-      else { i++; continue; }
-    }
+    if (isSectionHeader(curClean) || isSectionHeader(cleanTitle)) { i++; continue; }
 
     // lookahead: collect option lines following this line
     const options: string[] = [];
@@ -276,8 +309,13 @@ export function parseDocText(raw: string): ParsedBlock[] {
     // orphaned prefixed option line (no parent question) - skip
     if (hasOptionPrefix(curClean)) { i++; continue; }
 
-    // فقرة نثر تمهيدية (مقروءات/شرح) — ليست سؤالاً: سطر غير مرقّم، طويل، بلا فجوة إجابة
+    // فقرة نثر تمهيدية (مقروءات/شرح) — ليست سؤالاً: تُحفظ كنص وصفي بدون إجابة
     if (!numberedLine && !hasAnswerBlank(cleanTitle)) {
+      if (isPassageBody(cleanTitle)) {
+        blocks.push({ kind: "text", title: "", options: [], required: false, text: cleanTitle });
+        i++;
+        continue;
+      }
       if (cleanTitle.length >= PROSE_HARD_LENGTH) { i++; continue; }
       // طويل ولا ينتهي بعلامة استفهام → نص تمهيدي
       if (cleanTitle.length >= PROSE_SOFT_LENGTH && !/[\u061F?]\s*[!.]?\s*$/.test(cleanTitle)) {
@@ -327,11 +365,14 @@ export function blocksToQuestions(
           ? "checkbox"
           : b.kind === "paragraph"
             ? "paragraph"
-            : "short",
+            : b.kind === "text"
+              ? "text"
+              : "short",
     );
     q.id = uid();
-    q.title = b.title || `سؤال ${idx + 1}`;
-    q.description = "";
+    q.title = b.title || (b.kind === "text" ? "نص وصفي" : `سؤال ${idx + 1}`);
+    // نص المقروءة التمهيدية يُحفظ في الوصف حتى يظهر تحت العنوان في المعاينة والنموذج
+    q.description = b.kind === "text" ? (b.text ?? "") : "";
     q.required = b.required;
     q.options = b.options.filter((o) => o.length > 0);
     q.correct = b.correct ?? [];

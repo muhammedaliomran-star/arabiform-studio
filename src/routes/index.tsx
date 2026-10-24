@@ -124,6 +124,10 @@ function HomePage() {
     // الاختبار تلقائياً حتى تُصحَّح الإجابات في المعاينة ويُصدَّر النموذج كاختبار.
     const withCorrect = questions.filter((q) => (q.correct?.length ?? 0) > 0).length;
     const hasCorrect = withCorrect > 0;
+    // النصوص الوصفية (المقروءات) تُستورد ككتل نصية بدون إجابة
+    const texts = questions.filter((q) => q.type === "text").length;
+    const qsCount = questions.length - texts;
+    const textNote = texts > 0 ? ` + ${texts} نص وصفي (مقروءة)` : "";
     const correctNote = hasCorrect
       ? ` — ${withCorrect} إجابة صحيحة محددة تلقائياً${active && !active.isQuiz ? " ووضع الاختبار مفعّل" : ""}`
       : "";
@@ -134,7 +138,7 @@ function HomePage() {
         ...(hasCorrect && !active.isQuiz ? { isQuiz: true } : {}),
       });
       toast.success(
-        `تمت إضافة ${questions.length} سؤالاً إلى "${active.title}"${correctNote}`,
+        `تمت إضافة ${qsCount} سؤالاً${textNote} إلى "${active.title}"${correctNote}`,
         { duration: 8000 },
       );
     } else {
@@ -147,7 +151,7 @@ function HomePage() {
         questions,
         updatedAt: Date.now(),
       });
-      toast.success(`تم إنشاء نموذج من ${questions.length} سؤالاً${correctNote}`);
+      toast.success(`تم إنشاء نموذج من ${qsCount} سؤالاً${textNote}${correctNote}`);
     }
     setDocImportOpen(false);
   };

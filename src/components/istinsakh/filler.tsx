@@ -158,7 +158,11 @@ export function Filler({
               )}
             </h3>
           </div>
-          {q.description && <p className="mb-3 text-xs text-muted-foreground">{q.description}</p>}
+          {q.description && (
+            <p className="mb-3 whitespace-pre-line text-xs leading-relaxed text-muted-foreground">
+              {q.description}
+            </p>
+          )}
           {q.image && (
             <img src={q.image} alt={q.title} className="mb-3 max-h-64 rounded-xl border border-border" />
           )}

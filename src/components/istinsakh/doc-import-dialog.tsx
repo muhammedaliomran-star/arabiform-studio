@@ -133,6 +133,14 @@ export function DocImportDialog({
     });
   };
 
+  const updateBlockText = (idx: number, v: string) => {
+    setBlocks((prev) => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], text: v };
+      return next;
+    });
+  };
+
   const updateBlockOption = (bIdx: number, oIdx: number, v: string) => {
     setBlocks((prev) => {
       const next = [...prev];
@@ -334,7 +342,9 @@ export function DocImportDialog({
                 <div className="flex items-center gap-2">
                   <LayoutList className="h-4 w-4 text-muted-foreground" aria-hidden />
                   <span className="font-semibold">
-                    الأسئلة المستخرجة ({blocks.length})
+                    {blocks.some((b) => b.kind === "text")
+                      ? `المستخرج (${blocks.filter((b) => b.kind !== "text").length} سؤال + ${blocks.filter((b) => b.kind === "text").length} نص وصفي)`
+                      : `الأسئلة المستخرجة (${blocks.length})`}
                   </span>
                 </div>
                 <button
@@ -355,7 +365,7 @@ export function DocImportDialog({
                     <div className="flex flex-col sm:flex-row sm:items-start gap-2 mb-2">
                       <div className="flex-1 min-w-0">
                         <label className="block text-xs font-semibold text-muted-foreground mb-1">
-                          سؤال #{idx + 1}
+                          {b.kind === "text" ? `نص وصفي #${idx + 1}` : `سؤال #${idx + 1}`}
                         </label>
                         <input
                           value={b.title}
@@ -436,6 +446,19 @@ export function DocImportDialog({
                             + إضافة خيار
                           </button>
                         </div>
+                      </div>
+                    ) : b.kind === "text" ? (
+                      <div className="mt-2 space-y-1">
+                        <label className="text-xs font-semibold text-muted-foreground">
+                          نص المقروءة (يُعرض كنص وصفي بدون إجابة)
+                        </label>
+                        <textarea
+                          value={b.text ?? ""}
+                          onChange={(e) => updateBlockText(idx, e.target.value)}
+                          rows={4}
+                          className="w-full rounded border border-input bg-background px-2 py-1.5 text-sm outline-none focus:border-ring resize-y leading-relaxed"
+                          placeholder="نص الفقرة التمهيدية…"
+                        />
                       </div>
                     ) : (
                       b.correct && (
