@@ -4,11 +4,11 @@ export async function readTextFile(file: File): Promise<string> {
   return text;
 }
 
-/** ملحقات تُقرأ مباشرة في المتصفح (نص + PDF + Word .docx). */
-const DIRECT_EXTENSIONS = [".txt", ".md", ".pdf", ".docx"];
+/** ملحقات تُقرأ مباشرة في المتصفح (نص + PDF + Word .docx و .doc القديم). */
+const DIRECT_EXTENSIONS = [".txt", ".md", ".pdf", ".docx", ".doc"];
 
-/** ملحقات لا تزال تحتاج تحويلاً خارجياً (.doc القديم، RTF). */
-export const REQUIRES_CONVERSION = [".doc", ".rtf"];
+/** ملحقات لا تزال تحتاج تحويلاً خارجياً (RTF). */
+export const REQUIRES_CONVERSION = [".rtf"];
 
 export function isSupportedTextFile(file: File): boolean {
   const name = file.name.toLowerCase();
