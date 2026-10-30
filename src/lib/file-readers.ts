@@ -4,11 +4,11 @@ export async function readTextFile(file: File): Promise<string> {
   return text;
 }
 
-/** ملحقات تُقرأ مباشرة في المتصفح (نص + PDF + Word .docx). */
-const DIRECT_EXTENSIONS = [".txt", ".md", ".pdf", ".docx"];
+/** ملحقات تُقرأ مباشرة في المتصفح (نص + PDF + Word .docx و .doc القديم). */
+const DIRECT_EXTENSIONS = [".txt", ".md", ".pdf", ".docx", ".doc"];
 
-/** ملحقات لا تزال تحتاج تحويلاً خارجياً (.doc القديم، RTF). */
-export const REQUIRES_CONVERSION = [".doc", ".rtf"];
+/** ملحقات لا تزال تحتاج تحويلاً خارجياً (RTF). */
+export const REQUIRES_CONVERSION = [".rtf"];
 
 export function isSupportedTextFile(file: File): boolean {
   const name = file.name.toLowerCase();
@@ -857,6 +857,311 @@ async function readPdfFile(file: File): Promise<string> {
 
 
 /*==============================================================================
+  قراءة ملف Word .doc القديم (97-2003) محلياً في المتصفح.
+  بنية الملف: حاوية OLE/CFB تحوي تدفقَي WordDocument و 1Table/0Table.
+  نحلل جدول القطع (Piece Table) من بنية Clx ونستخرج النص قطعةً قطعة:
+  القطع المضغوطة 8 بت ترميزها windows-1256 (عربي) والغير مضغوطة UTF-16LE.
+==============================================================================*/
+
+const CFB_ENDOFCHAIN = 0xfffffffe;
+const CFB_FREESECT = 0xffffffff;
+
+/** متابعة سلسلة قطاعات من جدول FAT/MiniFAT. */
+function cfbChain(fat: Uint32Array, start: number, maxSteps: number): number[] {
+  const chain: number[] = [];
+  const visited = new Set<number>();
+  let sec = start;
+  while (
+    sec !== CFB_ENDOFCHAIN &&
+    sec !== CFB_FREESECT &&
+    sec < fat.length &&
+    !visited.has(sec) &&
+    chain.length < maxSteps
+  ) {
+    visited.add(sec);
+    chain.push(sec);
+    sec = fat[sec];
+  }
+  return chain;
+}
+
+/** تجميع محتوى سلسلة قطاعات في مصفوفة بايتات واحدة. */
+function cfbReadSectors(
+  data: Uint8Array,
+  chain: number[],
+  sectorSize: number,
+  headerSize: number,
+): Uint8Array {
+  const out = new Uint8Array(chain.length * sectorSize);
+  for (let i = 0; i < chain.length; i++) {
+    const off = headerSize + chain[i] * sectorSize;
+    if (off < 0 || off + sectorSize > data.length) break;
+    out.set(data.subarray(off, off + sectorSize), i * sectorSize);
+  }
+  return out;
+}
+
+/** جدول ترميز windows-1256 (المستخدم في ملفات الوورد العربية القديمة). */
+let cp1256Cache: string[] | null = null;
+function cp1256Char(b: number): string {
+  if (!cp1256Cache) {
+    const bytes = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) bytes[i] = i;
+    cp1256Cache = Array.from(new TextDecoder("windows-1256").decode(bytes));
+  }
+  return cp1256Cache[b] ?? "";
+}
+
+/** استخراج نص من ملف RTF بسيط (أحياناً يُحفظ بإمتداد .doc). */
+function extractRtfText(raw: string): string {
+  return raw
+    .replace(/\\'([0-9a-fA-F]{2})/g, (_m, h) => cp1256Char(parseInt(h, 16)))
+    .replace(/\\u(-?\d+)\s*\?/g, (_m, d) =>
+      String.fromCharCode(((parseInt(d, 10) % 65536) + 65536) % 65536),
+    )
+    .replace(/\\par[d]?\s?/g, "\n")
+    .replace(/\\tab\s?/g, "\t")
+    .replace(/\\\*/g, "")
+    .replace(/\\[a-zA-Z]+-?\d*\s?/g, "")
+    .replace(/[{}]/g, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
+}
+
+/** تنظيف نص .doc: فواصل الفقرات/الخلايا + حذف رموز التحكم الداخلية. */
+function cleanupDocText(s: string): string {
+  return s
+    .replace(/\r/g, "\n")
+    .replace(/[\u0007\u000B\u000C]/g, "\n") // نهاية خلية جدول/سطر/قسم
+    .replace(/[\u0000-\u0006\u0008\u000E-\u001F\uFFFD]/g, "") // رموز حقول وصور وغيرها
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** استخراج نص ملف .doc من تدفقَي WordDocument و Table. */
+function extractDocText(word: Uint8Array, table: Uint8Array): string {
+  const pieces: { off: number; cnt: number; compressed: boolean }[] = [];
+
+  // fcClx/lcbClx في رأس FIB (إزاحات ثابتة في Word 97+)
+  if (word.length >= 0x1a6 + 4) {
+    const fcClx = readU32(word, 0x1a2);
+    const lcbClx = readU32(word, 0x1a6);
+    if (lcbClx > 0 && lcbClx <= table.length && fcClx + lcbClx <= table.length) {
+      const clx = table.subarray(fcClx, fcClx + lcbClx);
+      let p = 0;
+      while (p < clx.length) {
+        const t = clx[p];
+        if (t === 1) {
+          if (p + 3 > clx.length) break;
+          p += 3 + readU16(clx, p + 1); // Prc: نتخطاها
+        } else if (t === 2) {
+          // Pcdt: جدول القطع
+          if (p + 5 > clx.length) break;
+          const lcb = readU32(clx, p + 1);
+          const plc = clx.subarray(p + 5, Math.min(p + 5 + lcb, clx.length));
+          const n = Math.floor((plc.length - 4) / 12);
+          for (let i = 0; i < n; i++) {
+            const cpEnd = readU32(plc, i * 4 + 4);
+            const cpStart = readU32(plc, i * 4);
+            const fcRaw = readU32(plc, (n + 1) * 4 + i * 8 + 2);
+            const compressed = (fcRaw & 0x40000000) !== 0;
+            const fc = fcRaw & 0x3fffffff;
+            const cnt = Math.max(0, cpEnd - cpStart);
+            if (cnt > 0) {
+              pieces.push({ off: compressed ? Math.floor(fc / 2) : fc, cnt, compressed });
+            }
+          }
+          break;
+        } else break;
+      }
+    }
+  }
+
+  const parts: string[] = [];
+  let usedTable = false;
+  for (const pc of pieces) {
+    const byteLen = pc.compressed ? pc.cnt : pc.cnt * 2;
+    if (pc.off < 0 || pc.off + byteLen > word.length) continue;
+    usedTable = true;
+    const bytes = word.subarray(pc.off, pc.off + byteLen);
+    parts.push(pc.compressed ? new TextDecoder("windows-1256").decode(bytes) : new TextDecoder("utf-16le").decode(bytes));
+  }
+
+  // احتياط: إن تعذر تحليل جدول القطع نجرب قراءة التدفق كاملاً بالترميزين
+  // ونختار الأفضل، ثم نحذف الأسطر التي تبدو بيانات تنسيق لا نصاً.
+  if (!usedTable || parts.join("").replace(/\s/g, "").length < 10) {
+    const ARABIC_RE = /[\u0600-\u06FF\u0750-\u077F]/;
+    const score = (s: string): number => (s.match(/[\u0600-\u06FF]/g) ?? []).length;
+    const u16 = new TextDecoder("utf-16le").decode(word);
+    const a8 = new TextDecoder("windows-1256").decode(word);
+    const best = score(u16) >= score(a8) ? u16 : a8;
+    const lines = best
+      .replace(/\r/g, "\n")
+      .split("\n")
+      .map((line) =>
+        line
+          .split("")
+          .filter((ch) => ch === "\t" || ch === "\u0007" || /[\u0020-\u007E\u0600-\u06FF\u2010-\u2027]/.test(ch))
+          .join(""),
+      )
+      .filter((line) => {
+        const t = line.trim();
+        if (!t) return false;
+        const printable = (t.match(/[A-Za-z\u0600-\u06FF0-9]/g) ?? []).length;
+        return printable / t.length >= 0.5;
+      });
+    return cleanupDocText(lines.join("\n"));
+  }
+
+  return cleanupDocText(parts.join(""));
+}
+
+/** قراءة ملف Word .doc (97-2003) عبر تحليل حاوية OLE/CFB في المتصفح. */
+async function readDocFile(file: File): Promise<string> {
+  const data = new Uint8Array(await file.arrayBuffer());
+
+  // التوقيع D0 CF 11 E0 A1 B1 1A E1 — وإن لم يوجد فربما نص/RTF/HTML بإمتداد .doc
+  const SIG = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+  const isOle = data.length >= 512 && SIG.every((b, i) => data[i] === b);
+
+  if (!isOle) {
+    const head = new TextDecoder("windows-1252").decode(data.subarray(0, 4096));
+    if (/^\s*\{\s*\\rtf/i.test(head)) {
+      const text = cleanupDocText(extractRtfText(new TextDecoder("windows-1252").decode(data)));
+      if (text.replace(/\s/g, "").length > 0) return text;
+    }
+    if (/^\s*<(!doctype|html)/i.test(head)) {
+      const html = new TextDecoder("utf-8").decode(data);
+      const text = cleanupDocText(
+        html
+          .replace(/<script[\s\S]*?<\/script>/gi, "")
+          .replace(/<style[\s\S]*?<\/style>/gi, "")
+          .replace(/<[^>]*>/g, "\n")
+          .replace(/&nbsp;/g, " "),
+      );
+      if (text.replace(/\s/g, "").length > 0) return text;
+    }
+    throw new Error(
+      "تعذر قراءة هذا الملف بامتداد .doc. إن كان ملف وورد فعلياً فافتحه في وورد واحفظه بصيغة \"مستند Word (.docx)\" ثم استورده من هنا، أو انسخ النص والصقه في المربع أدناه.",
+    );
+  }
+
+  const sectorSize = 1 << data[0x1e];
+  const headerSize = 512; // رأس v3 ثابت حتى مع قطاعات أكبر
+  const fatCount = readU32(data, 0x2c);
+  const dirStart = readU32(data, 0x30);
+  const miniCutoff = readU32(data, 0x38);
+  const miniFatStart = readU32(data, 0x3c);
+  const miniFatCount = readU32(data, 0x40);
+  const difatStart = readU32(data, 0x44);
+
+  // DIFAT: أول 109 مداخل في الرأس ثم قطاعات DIFAT متسلسلة
+  const fatSectorIds: number[] = [];
+  for (let i = 0; i < 109; i++) {
+    const id = readU32(data, 0x4c + i * 4);
+    if (id !== CFB_ENDOFCHAIN && id !== CFB_FREESECT) fatSectorIds.push(id);
+  }
+  let difatSec = difatStart;
+  const seenDifat = new Set<number>();
+  while (
+    difatSec !== CFB_ENDOFCHAIN &&
+    difatSec !== CFB_FREESECT &&
+    !seenDifat.has(difatSec) &&
+    fatSectorIds.length < fatCount
+  ) {
+    seenDifat.add(difatSec);
+    const off = headerSize + difatSec * sectorSize;
+    if (off + sectorSize > data.length) break;
+    const per = sectorSize / 4 - 1;
+    for (let i = 0; i < per; i++) {
+      const id = readU32(data, off + i * 4);
+      if (id !== CFB_ENDOFCHAIN && id !== CFB_FREESECT) fatSectorIds.push(id);
+    }
+    difatSec = readU32(data, off + sectorSize - 4);
+  }
+
+  // FAT
+  const perSector = sectorSize / 4;
+  const fat = new Uint32Array(fatSectorIds.length * perSector);
+  fatSectorIds.forEach((id, i) => {
+    const off = headerSize + id * sectorSize;
+    if (off + sectorSize > data.length) return;
+    for (let j = 0; j < perSector; j++) fat[i * perSector + j] = readU32(data, off + j * 4);
+  });
+
+  // الدليل (Directory) — مدخل 128 بايت لكل تدفق
+  const dirData = cfbReadSectors(data, cfbChain(fat, dirStart, 100000), sectorSize, headerSize);
+  type DirEntry = { name: string; type: number; start: number; size: number };
+  const entries: DirEntry[] = [];
+  for (let off = 0; off + 128 <= dirData.length; off += 128) {
+    const nameLen = readU16(dirData, off + 0x40);
+    if (nameLen < 2 || nameLen > 64) continue;
+    const name = new TextDecoder("utf-16le").decode(dirData.subarray(off, off + nameLen - 2));
+    entries.push({
+      name,
+      type: dirData[off + 0x42],
+      start: readU32(dirData, off + 0x74),
+      size: readU32(dirData, off + 0x78),
+    });
+  }
+
+  const root = entries.find((e) => e.type === 5);
+  const miniContainer = root
+    ? cfbReadSectors(data, cfbChain(fat, root.start, 100000), sectorSize, headerSize).subarray(0, root.size)
+    : new Uint8Array(0);
+
+  const miniFatU32 = new Uint32Array(miniFatCount * perSector);
+  if (miniFatCount > 0 && miniFatStart !== CFB_ENDOFCHAIN && miniFatStart !== CFB_FREESECT) {
+    const miniFatData = cfbReadSectors(data, cfbChain(fat, miniFatStart, 100000), sectorSize, headerSize);
+    for (let i = 0; i < miniFatU32.length; i++) {
+      if (i * 4 + 4 > miniFatData.length) break;
+      miniFatU32[i] = readU32(miniFatData, i * 4);
+    }
+  }
+
+  const readEntry = (e: DirEntry): Uint8Array => {
+    if (e.size < miniCutoff) {
+      return cfbReadSectors(data, cfbChain(fat, e.start, 100000), sectorSize, headerSize).subarray(0, e.size);
+    }
+    const chain = cfbChain(miniFatU32, e.start, 100000);
+    const out = new Uint8Array(chain.length * 64);
+    chain.forEach((s, i) => {
+      const from = s * 64;
+      if (from + 64 <= miniContainer.length) out.set(miniContainer.subarray(from, from + 64), i * 64);
+    });
+    return out.subarray(0, e.size);
+  };
+
+  const wordEntry = entries.find((e) => e.type === 2 && e.name.toLowerCase() === "worddocument");
+  if (!wordEntry) {
+    throw new Error(
+      "هذا الملف بصيغة .doc لا يحتوي على بيانات وورد قابلة للقراءة. افتحه في وورد واحفظه بصيغة \"مستند Word (.docx)\" ثم استورده من هنا.",
+    );
+  }
+
+  const wordData = readEntry(wordEntry);
+  const encrypted = (wordData[0x0b] & 0x01) !== 0;
+  if (encrypted) {
+    throw new Error(
+      "ملف الوورد محمي بكلمة مرور فلا يمكن قراءته. افتحه في وورد واحفظه بصيغة \"مستند Word (.docx)\" بدون حماية ثم استورده من هنا.",
+    );
+  }
+
+  const fWhichTblStm = (wordData[0x0b] & 0x02) !== 0;
+  const tblName = fWhichTblStm ? "1table" : "0table";
+  const tblEntry =
+    entries.find((e) => e.type === 2 && e.name.toLowerCase() === tblName) ??
+    entries.find((e) => e.type === 2 && /^0?1?table$/i.test(e.name));
+  const tableData = tblEntry ? readEntry(tblEntry) : new Uint8Array(0);
+
+  const text = extractDocText(wordData, tableData);
+  if (text.replace(/\s/g, "").length > 0) return text;
+
+  throw new Error(
+    "لم نتمكن من استخراج نص من هذا الملف (.doc). افتحه في وورد واحفظه بصيغة \"مستند Word (.docx)\" أو \"نص عادي (.txt)\" ثم استورده من هنا، أو انسخ النص والصقه في المربع أدناه.",
+  );
+}
+
+/*==============================================================================
   واجهة reading الموحدة
 ==============================================================================*/
 
@@ -871,6 +1176,9 @@ export async function readFileContent(file: File): Promise<string> {
   if (ext === ".docx") {
     return readDocxFile(file);
   }
+  if (ext === ".doc") {
+    return readDocFile(file);
+  }
   if (ext === ".pdf") {
     return readPdfFile(file);
   }
@@ -881,9 +1189,8 @@ export async function readFileContent(file: File): Promise<string> {
 export function conversionHint(file: File): string {
   const ext = file.name.toLowerCase().slice(file.name.lastIndexOf("."));
   if (REQUIRES_CONVERSION.includes(ext)) {
-    return `الملف "${file.name}" من نوع ${ext.toUpperCase()} يحتاج تحويلاً قبل الاستيراد.
-الرجاء أحد الخيارين:
-1. افتح الملف في وورد/بي دي إف → احفظه كـ "نص عادي (.txt)" أو ".docx" ثم استيرده من هنا.
+    return `الملف "${file.name}" من نوع ${ext.toUpperCase()} يحتاج تحويلاً قبل الاستيراد. اختر أحد الخيارين:
+1. افتح الملف في وورد ثم احفظه بصيغة "نص عادي (.txt)" أو "مستند Word (.docx)" واستورده من هنا.
 2. انسخ محتوى الملف والصقه في مربع النص أدناه واستورد من النص مباشرة.`;
   }
   return `نوع الملف "${ext}" غير مدعوم للاستيراد النصي.`;

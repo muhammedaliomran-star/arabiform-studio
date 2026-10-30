@@ -234,7 +234,7 @@ export function DocImportDialog({
             استيراد أسئلة من ملف / نص
           </DialogTitle>
           <DialogDescription>
-            استخرج الأسئلة والاختيارات من ملف نصي (.txt) أو PDF أو وورد (.docx)،
+            استخرج الأسئلة والاختيارات من ملف نصي (.txt) أو PDF أو وورد (.doc / .docx)،
             أو الصق النص مباشرة. راجع كل سؤال وعدّل عليه قبل الاستيراد إلى نموذجك.
           </DialogDescription>
         </DialogHeader>
@@ -245,7 +245,7 @@ export function DocImportDialog({
             <div className="flex flex-col gap-3">
               <div className="flex items-center gap-2 text-sm font-semibold">
                 <Upload className="h-4 w-4" aria-hidden />
-                ملف نصي / PDF / وورد (.docx)
+                ملف نصي / PDF / وورد (.doc / .docx)
               </div>
               <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
                 <button
@@ -258,7 +258,7 @@ export function DocImportDialog({
                 <input
                   ref={fileInput}
                   type="file"
-                  accept=".txt,.md,.pdf,.docx"
+                  accept=".txt,.md,.pdf,.docx,.doc"
                   className="hidden"
                   onChange={handleFileChange}
                 />
