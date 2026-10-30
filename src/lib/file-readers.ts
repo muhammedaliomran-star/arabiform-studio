@@ -119,45 +119,31 @@ async function readDocxFile(file: File): Promise<string> {
     return m ? isYellowFill(m[1]) : false;
   };
 
-  // نمشي على المستند بتسلسله: خلايا الجدول تفتح نطاقات تظليل يرثه ما بداخلها.
-  // نجمع التوكنات أولاً حتى تكون حدود كل فقرة معلومة (الفقرات ذاتية الإغلاق
-  // <w:p .../> لا تحوي </w:p> ولا يجوز أن يمتد البحث خلفها إلى فقرة تالية).
-  const tokens: RegExpExecArray[] = [];
-  const tokenRe = /<w:tc[\s>]|<\/w:tc[\s>]|<w:p[\s>]/g;
-  let tk: RegExpExecArray | null;
-  while ((tk = tokenRe.exec(xml)) !== null) tokens.push(tk);
-
+  // تقسيم المستند بواسطة إغلاق الفقرة </w:p> — كل كتلة تُعالج بشكل مستقل.
+  // هذا يضمن معالجة الفقرات داخل خلايا الجدول (<w:tc>) حيث إن التظليل
+  // قد يكون على الحرف <w:highlight> أو على الفقرة/الخلية <w:shd>.
+  const paraBlocks = xml.split("</w:p>");
   const lines: string[] = [];
-  const cellStack: boolean[] = [];
-  for (let ti = 0; ti < tokens.length; ti++) {
-    const tm = tokens[ti];
-    const tok = tm[0];
-    if (tok.startsWith("</w:tc")) {
-      if (cellStack.length) cellStack.pop();
-      continue;
-    }
-    if (tok.startsWith("<w:tc")) {
-      // <w:tcPr> يلي <w:tc> مباشرة ويتوقف عند أول فقرة
-      const prEnd = xml.indexOf("</w:tcPr>", tm.index);
-      const firstP = xml.indexOf("<w:p", tm.index);
-      let headEnd = prEnd >= 0 ? prEnd + 9 : tm.index + 1500;
-      if (firstP >= 0 && firstP < headEnd) headEnd = firstP;
-      cellStack.push(hasYellowShading(xml.slice(tm.index, headEnd)));
-      continue;
-    }
 
-    // فقرة كاملة: نستخرج نصوص حروفها ثم نقرر تظليلها.
-    // الحدود: أول </w:p> أو بداية التوكن التالي أيهما أقرب.
-    const paraStart = tm.index + tok.length;
-    const nextIdx = ti + 1 < tokens.length ? tokens[ti + 1].index : xml.length;
-    let paraEnd = xml.indexOf("</w:p>", paraStart);
-    if (paraEnd < 0 || nextIdx < paraEnd) paraEnd = nextIdx;
-    const paraContent = xml.slice(paraStart, paraEnd);
+  for (const block of paraBlocks) {
+    // العثور على علامة فتح الفقرة <w:p ...>
+    const pOpenMatch = block.match(/<w:p[\s>][\s\S]*?>/);
+    const pContent = pOpenMatch ? block.slice(pOpenMatch[0].length) : block;
+
+    // تظليل الفقرة نفسها <w:pPr><w:shd .../> يغطي كل نصها.
+    const pPrIdx = pContent.indexOf("<w:pPr");
+    const pPrEnd = pContent.indexOf("</w:pPr>");
+    const paraShaded =
+      pPrIdx >= 0 && pPrEnd > pPrIdx && hasYellowShading(pContent.slice(pPrIdx, pPrEnd + 9));
+
+    // تظليل الخلية الجدولية التي ينتمي إليها النص (ما قبل فتح الفقرة).
+    const beforeP = pOpenMatch ? block.slice(0, pOpenMatch.index) : "";
+    const cellShaded = hasYellowShading(beforeP);
 
     const parts: string[] = [];
     const runRe = /<w:r[\s>]([\s\S]*?)<\/w:r>/g;
     let rm: RegExpExecArray | null;
-    while ((rm = runRe.exec(paraContent)) !== null) {
+    while ((rm = runRe.exec(pContent)) !== null) {
       const runContent = rm[1];
       const isHighlighted =
         /<w:highlight[^>]*w:val="yellow"/i.test(runContent) || hasYellowShading(runContent);
@@ -171,16 +157,11 @@ async function readDocxFile(file: File): Promise<string> {
       }
     }
 
-    // تظليل الفقرة نفسها <w:pPr><w:shd .../> يغطي كل نصها.
-    const pPrIdx = paraContent.indexOf("<w:pPr");
-    const pPrEnd = paraContent.indexOf("</w:pPr>");
-    const paraShaded =
-      pPrIdx >= 0 && pPrEnd > pPrIdx && hasYellowShading(paraContent.slice(pPrIdx, pPrEnd + 9));
-
     let line = parts.join("").trim();
-    if ((paraShaded || cellStack.some((v) => v)) && line) line = "[[HL]]" + line + "[[/HL]]";
-    lines.push(line);
+    if ((paraShaded || cellShaded) && line) line = "[[HL]]" + line + "[[/HL]]";
+    if (line) lines.push(line);
   }
+
   const joined = lines.join("\n");
   return joined.trim().length > 0 ? joined : xml.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 }
