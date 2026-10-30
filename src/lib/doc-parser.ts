@@ -180,6 +180,104 @@ export function parseDocText(raw: string): ParsedBlock[] {
   let i = 0;
   let questionNumber = 0;
 
+  /*==============================================================================
+    تجميع أسئلة الجداول (4 أعمدة) — ملفات وورد التي تضع كل سؤال في صف جدول:
+    السطر الأول نص السؤال (بصيغة "كلمة : كلمة" أو جملة/فجوة)، ثم 4 خيارات،
+    كل خيار يسبقه سطر يحمل حرف الخيار المنفصل (أ/ب/ج/د) وقد يكون مظللاً [[HL]].
+    نعيد كتلة سؤال واحدة لكل مجموعة قبل المعالجة العامة.
+  ==============================================================================*/
+  const OPTION_LETTER_LINE_RE =
+    /^[\[٠-٩]*\s*(?:\[\[HL\]\]\s*)?([أإآاهـدجزحطييكلمنسعفرصقشثخذضظغ]|[A-Da-d])(?:\s*[\)\.\uFF1A:])?(?:\s*\[\[/HL\]\])?$/;
+
+  const isOptionLetterLine = (s: string): boolean => OPTION_LETTER_LINE_RE.test(s);
+
+  /** نص خيار مكتوب "كلمة : كلمة" أو كلمة/عبارة قصيرة (فجوة الإجابة) */
+  const isOptionTextLine = (s: string): boolean => {
+    const t = stripHL(s).trim();
+    if (!t || t.length > 80) return false;
+    if (isOptionLetterLine(t)) return false;
+    if (/[؟?]\s*$/.test(t)) return false;
+    if (/^[^:：]{1,60}[:：]\s*[^:：]{1,60}$/.test(t)) return true;
+    // كلمة/عبارة قصيرة بدون استفهام (خيارات أسئلة الإكمال)
+    return t.length <= 40 && !isQuestionNumberLine(t) && !isSectionHeader(t);
+  };
+
+  /** نص السؤال: سطر يسبق مجموعة الخيارات مباشرة */
+  const isQuestionStemLine = (s: string): boolean => {
+    const t = stripHL(s).trim();
+    if (!t || t.length > 200) return false;
+    if (isOptionLetterLine(t)) return false;
+    return true;
+  };
+
+  /**
+   * حاول تجميع صف جدول سؤال يبدأ عند السطر i.
+   * يعيد null إذا لم تكن مجموعة أسئلة صحيحة (2+ خيارات).
+   */
+  const tryParseTableQuestion = (
+    start: number,
+  ): { title: string; options: string[]; correct: string[]; stemIsOption: boolean; end: number } | null => {
+    const stemRaw = lines[start];
+    if (!isQuestionStemLine(stemRaw)) return null;
+
+    const options: string[] = [];
+    const correct: string[] = [];
+    let labeledCount = 0; // عدد الخيارات التي لها تسمية حرف على سطر مستقل
+    let j = start + 1;
+
+    // إذا كان نص السؤال نفسه خيار تناظر "كلمة : كلمة" (أو مظللاً) فهو الخيار (أ)
+    // — شائع في أسئلة التناظر اللفظي: عمود الجدول الأول يحمل الخيار المظلل.
+    const stemClean0 = stripHL(stemRaw).trim();
+    const stemIsAnalogy = /^[^:：]{2,40}[:：]\s*[^:：]{2,40}$/.test(stemClean0);
+    if (stemIsAnalogy || hasHL(stemRaw)) {
+      const optText = extractOptionText(stemClean0);
+      if (optText && optText.length > 0) {
+        options.push(optText);
+        if (hasHL(stemRaw)) correct.push(optText);
+      }
+    }
+
+    while (j < n) {
+      const raw = lines[j];
+      const clean = stripHL(raw).trim();
+      if (!clean) { j++; continue; }
+
+      // حرف خيار منفصل (أ/ب/ج/د) — النص يليه على السطر التالي
+      if (isOptionLetterLine(clean)) {
+        // ابحث عن نص الخيار بعد هذا الحرف (تخطِّ الفواصل)
+        let k = j + 1;
+        while (k < n && !stripHL(lines[k]).trim()) k++;
+        if (k >= n) break;
+        const textRaw = lines[k];
+        const textClean = stripHL(textRaw).trim();
+        if (!isOptionTextLine(textClean)) break;
+        const optText = extractOptionText(textClean);
+        if (optText) {
+          options.push(optText);
+          labeledCount++;
+          // الحرف أو النص مظللاً = الإجابة الصحيحة
+          if (hasHL(raw) || hasHL(textRaw)) correct.push(optText);
+        }
+        j = k + 1;
+        if (options.length >= 4) break;
+        continue;
+      }
+
+      break;
+    }
+
+    // لا نعتبر هذا السؤال "جدولياً" إلا إذا احتوى خيارات مُسمّاة بحروف على
+    // أسطر مستقلة (بُعد جدول حقيقي). وإلا نترك الإدخال للمُعالج العام كي لا
+    // يبتلع صيغ الربط (القلم : كتابة أ الورق) أو التناظر البسيط.
+    if (labeledCount < 2) return null;
+    if (options.length < 2) return null;
+    // العنوان نص السؤال الأصلي (لا نحذف الخيار المُظلل من العنوان).
+    const title = stripSourceNumber(stripHL(stemRaw)).trim();
+    if (!title) return null;
+    const stemIsOption = (stemIsAnalogy || hasHL(stemRaw)) && options.length > 0;
+    return { title, options, correct, stemIsOption, end: j };
+  };
+
   /**
    * فصل خيار (أ) الملتحم بنهاية سطر السؤال — شائع في أسئلة التناظر اللفظي:
    * "القلم : كتابة أ الورق" → العنوان "القلم : كتابة" + خيار "الورق".
@@ -248,6 +346,22 @@ export function parseDocText(raw: string): ParsedBlock[] {
 
     // section header lines are never questions
     if (isSectionHeader(curClean) || isSectionHeader(cleanTitle)) { i++; continue; }
+
+    // ===== تجميع صف جدول سؤال (4 أعمدة) — أولوية على المعالجة العامة =====
+    const tableQ = tryParseTableQuestion(i);
+    if (tableQ) {
+      questionNumber++;
+      blocks.push({
+        kind: "radio",
+        title: questionNumber + ". " + tableQ.title,
+        options: tableQ.options,
+        correct: tableQ.correct.length > 0 ? tableQ.correct : undefined,
+        required: true,
+      });
+      i = tableQ.end;
+      continue;
+    }
+    // =====================================================================
 
     // lookahead: collect option lines following this line
     const options: string[] = [];

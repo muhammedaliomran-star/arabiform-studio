@@ -132,6 +132,19 @@ function Get-OptionText([string]$s) {
     return $t.Trim()
 }
 
+function Test-OptionText([string]$s) {
+    # mirrors isOptionTextLine in doc-parser.ts
+    $t = (Strip-HL $s).Trim()
+    if ($t.Length -eq 0 -or $t.Length -gt 80) { return $false }
+    $letterRe = '^\[?[A-Da-d]{1}\s*[\)\.\uFF1A:]?\s*\]?$'
+    if ($t -cmatch $letterRe) { return $false }
+    if ($t -cmatch '[?\u061F]\s*$') { return $false }
+    $colonRe = '^[^:：]{1,60}[:：]\s*[^:：]{1,60}$'
+    if ($t -cmatch $colonRe) { return $true }
+    # short word/phrase without a question mark (fill-in-the-blank options)
+    return ($t.Length -le 40)
+}
+
 function Test-OptionPrefix([string]$s) {
     if ($s -cmatch '^(?:[\u0660-\u0669]{1,2}|\d{1,2})[\-\.\)\uFF1D\uFF1A:]\s*\S') { return $true }
     if ($s -cmatch '^(?:[\u0660-\u0669]{1,2}|\d{1,2})(?=[\u0621-\u064A])') { return $true }
@@ -165,6 +178,74 @@ function Test-PassageBody([string]$s) {
     if ($t -cmatch '^(?:[\u0660-\u0669]{1,2}|[0-9]{1,2})[\-\.\)\uFF1D\uFF1A:]') { return $false }
     if ($t -cmatch '^[\u0660-\u06690-9]{1,2}\s*[\u0621-\u064A]') { return $false }
     return $true
+}
+
+function Get-TableQuestion([System.Collections.ArrayList]$lines, [int]$start, [int]$n) {
+    # Mirrors TS tryParseTableQuestion: groups one 4-column table row (a question
+    # whose options are laid out across columns) into a single question block.
+    $letterRe = '^\[?[A-Da-d]{1}\s*[\)\.\uFF1A:]?\s*\]?$'
+    $colonRe = '^[^:：]{1,60}[:：]\s*[^:：]{1,60}$'
+
+    $stemRaw = $lines[$start]
+    $stemClean = (Strip-HL $stemRaw).Trim()
+    if ($stemClean.Length -eq 0 -or $stemClean.Length -gt 200) { return $null }
+    if ($stemClean -cmatch $letterRe) { return $null }
+
+    $options = New-Object System.Collections.ArrayList
+    $correct = New-Object System.Collections.ArrayList
+    $labeledCount = 0
+    $j = $start + 1
+
+    # If the stem itself is an analogy "word : word" or is highlighted, it is option أ.
+    $stemIsAnalogy = $stemClean -cmatch $colonRe
+    $stemHL = $stemRaw.Contains('[[HL]]')
+    $stemIsOption = $stemIsAnalogy -or $stemHL
+    if ($stemIsOption) {
+        $stemText = Get-OptionText $stemClean
+        if ($stemText.Length -gt 0) {
+            [void]$options.Add($stemText)
+            if ($stemHL) { [void]$correct.Add($stemText) }
+        }
+    }
+
+    while ($j -lt $n) {
+        $raw = $lines[$j]
+        $clean = (Strip-HL $raw).Trim()
+        if ($clean.Length -eq 0) { $j++; continue }
+
+        if ($clean -cmatch $letterRe) {
+            # The option letter; its text is on the next non-empty line.
+            $k = $j + 1
+            while ($k -lt $n -and ((Strip-HL $lines[$k]).Trim().Length -eq 0)) { $k++ }
+            if ($k -ge $n) { break }
+            $textRaw = $lines[$k]
+            $textClean = (Strip-HL $textRaw).Trim()
+            if (-not (Test-OptionText $textClean)) { break }
+            $optText = Get-OptionText $textClean
+            if ($optText.Length -gt 0) {
+                [void]$options.Add($optText)
+                $labeledCount++
+                if ($raw.Contains('[[HL]]') -or $textRaw.Contains('[[HL]]')) { [void]$correct.Add($optText) }
+            }
+            $j = $k + 1
+            if ($options.Count -ge 4) { break }
+            continue
+        }
+
+        break
+    }
+
+    # Only treat as a table question if it has >=2 separately-labeled options
+    # (a real table layout); otherwise leave it to the generic parser.
+    if ($labeledCount -lt 2) { return $null }
+    if ($options.Count -lt 2) { return $null }
+    return [pscustomobject]@{
+        stemIndex   = $start
+        stemIsOption = $stemIsOption
+        options     = @($options.ToArray())
+        correct     = @($correct.ToArray())
+        end         = $j
+    }
 }
 
 function Parse-DocText([string]$raw) {
@@ -217,6 +298,22 @@ function Parse-DocText([string]$raw) {
         $cleanTitle = Strip-SourceNumber $curClean
         $numberedLine = Test-QuestionNumberLine $curClean
         if ((Test-SectionHeader $curClean) -or (Test-SectionHeader $cleanTitle)) { $i++; continue }
+
+        # ===== table-row question grouping (4 columns) — priority over generic pass =====
+        $tq = Get-TableQuestion $lines $i $n
+        if ($null -ne $tq) {
+            $qnum++
+            $tTitle = (Strip-SourceNumber (Strip-HL $lines[$tq.stemIndex])).Trim()
+            [void]$blocks.Add([pscustomobject]@{
+                kind    = 'radio'
+                title   = ($qnum.ToString() + '. ' + $tTitle)
+                options = @($tq.options)
+                correct = @($tq.correct)
+            })
+            $i = $tq.end
+            continue
+        }
+        # ====================================================================
 
         $options = New-Object System.Collections.ArrayList
         $correct = New-Object System.Collections.ArrayList
