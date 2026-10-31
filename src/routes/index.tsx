@@ -8,6 +8,7 @@ import { Importer } from "@/components/istinsakh/importer";
 import { Editor } from "@/components/istinsakh/editor";
 import { Filler } from "@/components/istinsakh/filler";
 import { Responses, ResponsesToolbar } from "@/components/istinsakh/responses";
+import { DocImportDialog } from "@/components/istinsakh/doc-import-dialog";
 import { useFormsStore } from "@/hooks/use-forms-store";
 import { TEMPLATES, templateToForm } from "@/lib/form-templates";
 import type { Answer, FormDoc, Question, Store, FormResponse } from "@/lib/form-types";
@@ -44,6 +45,7 @@ function HomePage() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [docImportOpen, setDocImportOpen] = useState(false);
   const [deleteAllOpen, setDeleteAllOpen] = useState(false);
 
   // Light mode is the default for first-time visitors.
@@ -114,6 +116,42 @@ function HomePage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "تعذّر قراءة الملف.");
     }
+  };
+
+  const handleImportDoc = (questions: Question[]) => {
+    if (!questions.length) return;
+    const withCorrect = questions.filter((q) => (q.correct?.length ?? 0) > 0).length;
+    const hasCorrect = withCorrect > 0;
+    const texts = questions.filter((q) => q.type === "text").length;
+    const qsCount = questions.length - texts;
+    const textNote = texts > 0 ? ` + ${texts} نص وصفي (مقروءة)` : "";
+    const quizNote = hasCorrect ? " ووضع الاختبار مفعّل" : "";
+    const correctNote = hasCorrect
+      ? ` — ${withCorrect} إجابة صحيحة محددة تلقائياً${quizNote}`
+      : "";
+    if (active) {
+      updateActive({
+        questions: [...active.questions, ...questions],
+        ...(hasCorrect && !active.isQuiz ? { isQuiz: true } : {}),
+      });
+      toast.success(
+        `تمت إضافة ${qsCount} سؤالاً${textNote} إلى "${active.title}"${correctNote}`,
+        { duration: 8000 },
+      );
+    } else {
+      addForm({
+        id: uid(),
+        title: "مستورد من ملف",
+        description: "",
+        isQuiz: hasCorrect || undefined,
+        questions,
+        updatedAt: Date.now(),
+      });
+      toast.success(`تم إنشاء نموذج من ${qsCount} سؤالاً${textNote}${correctNote}`, {
+        duration: 8000,
+      });
+    }
+    setDocImportOpen(false);
   };
 
   const deleteAllForms = () => {
@@ -235,10 +273,17 @@ function HomePage() {
           onImport={handleImport}
           onBlank={createBlank}
           onImportJson={handleImportJson}
+          onImportDoc={() => setDocImportOpen(true)}
           onTemplate={handleTemplate}
           loading={loading}
           error={error}
           compact={store.forms.length > 0}
+        />
+
+        <DocImportDialog
+          open={docImportOpen}
+          onOpenChange={setDocImportOpen}
+          onImport={handleImportDoc}
         />
 
         <div className="mt-8 grid gap-8 md:grid-cols-[240px_1fr]">

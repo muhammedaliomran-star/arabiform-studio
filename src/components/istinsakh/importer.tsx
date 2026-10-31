@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { ChevronDown, Link2, FilePlus2, Upload, AlertTriangle } from "lucide-react";
+import { ChevronDown, Link2, FilePlus2, Upload, AlertTriangle, FileText } from "lucide-react";
 
 import { TEMPLATES } from "@/lib/form-templates";
 
@@ -9,6 +9,7 @@ export function Importer({
   onImport,
   onBlank,
   onImportJson,
+  onImportDoc,
   onTemplate,
   loading,
   error,
@@ -19,6 +20,7 @@ export function Importer({
   onImport: () => void;
   onBlank: () => void;
   onImportJson: (file: File) => void;
+  onImportDoc: () => void;
   onTemplate: (key: string) => void;
   loading: boolean;
   error: string | null;
@@ -110,6 +112,12 @@ export function Importer({
           className={`inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs font-semibold transition hover:bg-secondary ${focusRing}`}
         >
           <Upload className="h-3.5 w-3.5" aria-hidden /> استيراد ملف JSON
+        </button>
+        <button
+          onClick={onImportDoc}
+          className={`inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs font-semibold transition hover:bg-secondary ${focusRing}`}
+        >
+          <FileText className="h-3.5 w-3.5" aria-hidden /> استيراد من ملف أسئلة
         </button>
         <input
           ref={fileRef}
