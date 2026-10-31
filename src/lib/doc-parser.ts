@@ -187,7 +187,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
     نعيد كتلة سؤال واحدة لكل مجموعة قبل المعالجة العامة.
   ==============================================================================*/
   const OPTION_LETTER_LINE_RE =
-    /^[\[٠-٩]*\s*(?:\[\[HL\]\]\s*)?([أإآاهـدجزحطييكلمنسعفرصقشثخذضظغ]|[A-Da-d])(?:\s*[\)\.\uFF1A:])?(?:\s*\[\[/HL\]\])?$/;
+    /^[\[٠-٩]*\s*(?:\[\[HL\]\]\s*)?([أإآاهـدجزحطييكلمنسعفرصقشثخذضظغ]|[A-Da-d])(?:\s*[\)\.\uFF1A:])?(?:\s*\[\[\/HL\]\])?$/;
 
   const isOptionLetterLine = (s: string): boolean => OPTION_LETTER_LINE_RE.test(s);
 
