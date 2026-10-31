@@ -117,7 +117,7 @@ export function Importer({
           onClick={onImportDoc}
           className={`inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs font-semibold transition hover:bg-secondary ${focusRing}`}
         >
-          <FileText className="h-3.5 w-3.5" aria-hidden /> استيراد من ملف أسئلة
+          <FileText className="h-3.5 w-3.5" aria-hidden /> استيراد من Word
         </button>
         <input
           ref={fileRef}

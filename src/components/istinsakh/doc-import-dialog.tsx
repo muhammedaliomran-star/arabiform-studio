@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -10,20 +10,21 @@ import {
   DialogTitle,
   DialogClose,
 } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 import {
-  Button,
-} from "@/components/ui/button";
-import {
-  Upload,
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  CheckCircle2,
+  ClipboardPaste,
+  Eye,
   FileText,
   FileUp,
+  Loader2,
+  Plus,
   Trash2,
-  RotateCcw,
-  CheckCircle2,
-  AlertTriangle,
-  LayoutList,
-  Eye,
-  EyeOff,
+  Upload,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { Question } from "@/lib/form-types";
@@ -45,109 +46,277 @@ type DocImportDialogProps = {
   onImport: (questions: Question[]) => void;
 };
 
+/** مراحل تدفق الاستيراد: اختيار الملف ← التحليل ← المراجعة */
+type Stage = "select" | "analyzing" | "review";
+
+/** توحيد كلمات صح/خطأ وإزالة الأقوال */
+function normTF(s: string): string {
+  const t = s.replace(/[（()\s]/g, "");
+  return t === "صواب" ? "صح" : t;
+}
+
+function isTFWord(s: string): boolean {
+  const t = normTF(s);
+  return t === "صح" || t === "خطأ";
+}
+
+/** تسميات أنواع الأسئلة في قائمة التغيير */
+const typeOptions: Array<{ value: ParsedBlock["kind"]; label: string }> = [
+  { value: "radio", label: "اختيار من متعدد" },
+  { value: "truefalse", label: "صح / خطأ" },
+  { value: "checkbox", label: "اختيار من متعدد (عدة إجابات)" },
+  { value: "short", label: "مقالي — إجابة قصيرة" },
+  { value: "paragraph", label: "مقالي — فقرة" },
+  { value: "text", label: "نص وصفي (بدون إجابة)" },
+];
+
+function kindLabel(k: ParsedBlock["kind"]): string {
+  switch (k) {
+    case "radio":
+      return "اختيار من متعدد";
+    case "checkbox":
+      return "اختيار (عدة إجابات)";
+    case "truefalse":
+      return "صح / خطأ";
+    case "short":
+      return "مقالي (إجابة قصيرة)";
+    case "paragraph":
+      return "مقالي (فقرة)";
+    default:
+      return "نص وصفي";
+  }
+}
+
+/**
+ * سبب كون السؤال "يحتاج إلى مراجعة" — null يعني سؤالاً كاملاً.
+ * لا نُخمّن الإجابة أبداً: سؤال الاختيار بلا إجابة محدّدة يحتاج تحديد المستخدم.
+ */
+function reviewReason(b: ParsedBlock): string | null {
+  if (b.kind === "text") {
+    return (b.text ?? "").trim() ? null : "نص المقروءة فارغ";
+  }
+  if (!b.title.trim()) return "نص السؤال فارغ";
+  if (b.kind === "radio" || b.kind === "checkbox" || b.kind === "truefalse") {
+    const opts = b.options.map((o) => o.trim()).filter(Boolean);
+    if (opts.length < 2) return "الاختيارات أقل من اثنين";
+    if (!b.correct || b.correct.length === 0) return "لم تُحدَّد الإجابة الصحيحة بعد";
+    if (b.kind !== "checkbox" && b.correct.length > 1) {
+      return b.kind === "truefalse"
+        ? "صح/خطأ: حدّد إجابة واحدة"
+        : "لاختيار من متعدد: حدّد إجابة واحدة";
+    }
+  }
+  return null;
+}
+
+/** حقل الدرجة: يحفظ النص أثناء الكتابة ويرجع قيمة صحيحة عند الخروج */
+function PointsInput({
+  value,
+  onCommit,
+}: {
+  value: number;
+  onCommit: (v: number) => void;
+}) {
+  const [txt, setTxt] = useState(String(value));
+  useEffect(() => {
+    setTxt(String(value));
+  }, [value]);
+  return (
+    <input
+      type="number"
+      min={0}
+      step={1}
+      value={txt}
+      onChange={(e) => {
+        setTxt(e.target.value);
+        const v = Number(e.target.value);
+        if (e.target.value !== "" && Number.isFinite(v) && v >= 0) onCommit(v);
+      }}
+      onBlur={() => {
+        const raw = txt.trim();
+        const v = Number(raw);
+        const next = raw !== "" && Number.isFinite(v) && v >= 0 ? v : 1;
+        setTxt(String(next));
+        onCommit(next);
+      }}
+      className="w-14 rounded border border-input bg-background px-1.5 py-1 text-center text-xs outline-none focus:border-ring"
+      aria-label="درجة السؤال"
+    />
+  );
+}
+
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " م.ب";
+  return Math.max(1, Math.round(bytes / 1024)) + " ك.ب";
+}
+
 export function DocImportDialog({
   open,
   onOpenChange,
   onImport,
 }: DocImportDialogProps) {
-  const [text, setText] = useState("");
-  const [file, setFile] = useState<File | null>(null);
-  const [rawExtractedText, setRawExtractedText] = useState("");
-  const [previewOpen, setPreviewOpen] = useState(false);
+  const [stage, setStage] = useState<Stage>("select");
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const [blocks, setBlocks] = useState<ParsedBlock[]>([]);
-  const [parsing, setParsing] = useState(false);
-  const [pdfLoading, setPdfLoading] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [rawText, setRawText] = useState("");
+  const [showRaw, setShowRaw] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [analyzingMsg, setAnalyzingMsg] = useState("");
+  const [bulkPoints, setBulkPoints] = useState("1");
   const fileInput = useRef<HTMLInputElement>(null);
+  const openRef = useRef(open);
 
-  const parseNow = useCallback(
-    async (source: string | File) => {
-      setParsing(true);
-      try {
-        let raw: string;
-        if (typeof source === "string") {
-          raw = source;
-        } else {
-          if (!isSupportedTextFile(source)) {
-            toast.error(conversionHint(source));
-            setParsing(false);
-            return;
-          }
-          if (source.name.toLowerCase().endsWith(".pdf")) {
-            setPdfLoading(true);
-          }
-          raw = await readFileContent(source);
-          setFile(source);
-          setRawExtractedText(raw);
-        }
-        const parsed = parseDocText(raw);
-        setBlocks(parsed);
-        setText(typeof source === "string" ? source : text);
-        if (parsed.length === 0) {
-          toast.warning("لم يتم العثور على أسئلة قابلة للتحليل في النص.");
-        } else {
-          toast.success(`تم استخراج ${parsed.length} سؤالاً — راجِعها في المعاينة أدناه.`);
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "تعذّر تحليل الملف.";
-        toast.error(msg);
-        console.error(err);
-      } finally {
-        setParsing(false);
-        setPdfLoading(false);
+  // إعادة تعيين كاملة عند إغلاق النافذة (بغض النظر عن مصدر الإغلاق)
+  useEffect(() => {
+    openRef.current = open;
+    if (open) return;
+    setStage("select");
+    setPendingFile(null);
+    setDragOver(false);
+    setBlocks([]);
+    setSelected(new Set());
+    setRawText("");
+    setShowRaw(false);
+    setPasteText("");
+    setError(null);
+    setAnalyzingMsg("");
+    setBulkPoints("1");
+  }, [open]);
+
+  /*============================ التحليل ============================*/
+  const analyze = useCallback(async (source: File | string) => {
+    setError(null);
+    const isFile = typeof source !== "string";
+    setAnalyzingMsg(
+      isFile
+        ? "جاري تحليل ملف Word واستخراج الأسئلة..."
+        : "جاري تحليل النص واستخراج الأسئلة...",
+    );
+    setStage("analyzing");
+    try {
+      // إفساح للرسم حتى تظهر شاشة التحميل
+      await new Promise((r) => setTimeout(r, 150));
+      let raw: string;
+      if (isFile) {
+        const f = source as File;
+        if (!isSupportedTextFile(f)) throw new Error(conversionHint(f));
+        raw = await readFileContent(f);
+      } else {
+        raw = source as string;
       }
-    },
-    [],
-  );
+      if (!openRef.current) return;
+      const parsed = parseDocText(raw);
+      if (!openRef.current) return;
+      if (isFile) setRawText(raw);
+      if (parsed.length === 0) {
+        setStage("select");
+        const msg =
+          "تعذر استخراج الأسئلة من الملف.\nتأكد من أن ملف Word يحتوي على أسئلة واضحة ومنظمة ثم حاول مرة أخرى.";
+        setError(msg);
+        toast.error("تعذر استخراج الأسئلة من الملف.");
+        return;
+      }
+      setBlocks(parsed);
+      setSelected(new Set());
+      setStage("review");
+      const need = parsed.filter((b) => reviewReason(b) !== null).length;
+      toast.success(
+        `تم العثور على ${parsed.length} سؤالاً — راجِعها قبل إضافتها إلى الامتحان.` +
+          (need ? ` ⚠ ${need} يحتاج إلى مراجعة` : ""),
+      );
+    } catch (err) {
+      if (!openRef.current) return;
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "تعذّر تحليل الملف.\nتأكد من أن ملف Word يحتوي على أسئلة واضحة ومنظمة ثم حاول مرة أخرى.";
+      setStage("select");
+      setError(msg);
+      toast.error(msg);
+    }
+  }, []);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (f) parseNow(f);
-    e.target.value = "";
+  /*============================ اختيار الملف ============================*/
+  const acceptFile = (f: File | null | undefined) => {
+    if (!f) return;
+    if (!isSupportedTextFile(f)) {
+      const msg = conversionHint(f);
+      setError(msg);
+      toast.error(msg);
+      return;
+    }
+    setError(null);
+    setPendingFile(f);
   };
 
-  const handlePasteChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setText(e.target.value);
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    acceptFile(e.dataTransfer.files?.[0]);
   };
 
-  const handlePasteImport = () => {
-    if (!text.trim()) {
+  const startFileImport = () => {
+    if (!pendingFile) {
+      toast.error("اختر ملف Word أولاً أو أفلته في المنطقة المخصصة.");
+      return;
+    }
+    void analyze(pendingFile);
+  };
+
+  const startPasteImport = () => {
+    if (!pasteText.trim()) {
       toast.error("الرجاء لصق نص الأسئلة أولاً.");
       return;
     }
-    parseNow(text);
+    void analyze(pasteText.trim());
   };
 
-  const updateBlockTitle = (idx: number, v: string) => {
+  /*============================ تعديل الكتل ============================*/
+  const patchBlock = (idx: number, patch: Partial<ParsedBlock>) =>
     setBlocks((prev) => {
       const next = [...prev];
-      next[idx] = { ...next[idx], title: v };
+      next[idx] = { ...next[idx], ...patch };
+      return next;
+    });
+
+  const changeKind = (idx: number, kind: ParsedBlock["kind"]) => {
+    setBlocks((prev) => {
+      const next = [...prev];
+      const b: ParsedBlock = { ...next[idx], kind };
+      if (kind === "truefalse") {
+        b.options = ["صح", "خطأ"];
+        const corr = (b.correct ?? [])
+          .map(normTF)
+          .filter((w) => w === "صح" || w === "خطأ");
+        b.correct = corr.length ? Array.from(new Set(corr)) : undefined;
+      } else if (kind === "radio" || kind === "checkbox") {
+        const live = b.options.map((o) => o.trim()).filter(Boolean);
+        if (live.length < 2) {
+          b.options = [
+            ...live,
+            ...(live.length === 1 ? ["خيار 2"] : ["خيار 1", "خيار 2"]),
+          ];
+        }
+      } else if (kind === "text" && typeof b.text !== "string") {
+        b.text = "";
+      }
+      next[idx] = b;
       return next;
     });
   };
 
-  const updateBlockType = (idx: number, kind: ParsedBlock["kind"]) => {
+  const updateOption = (bIdx: number, oIdx: number, v: string) => {
     setBlocks((prev) => {
       const next = [...prev];
-      next[idx] = { ...next[idx], kind };
-      return next;
-    });
-  };
-
-  const updateBlockText = (idx: number, v: string) => {
-    setBlocks((prev) => {
-      const next = [...prev];
-      next[idx] = { ...next[idx], text: v };
-      return next;
-    });
-  };
-
-  const updateBlockOption = (bIdx: number, oIdx: number, v: string) => {
-    setBlocks((prev) => {
-      const next = [...prev];
-      next[bIdx] = {
-        ...next[bIdx],
-        options: next[bIdx].options.map((o, k) => (k === oIdx ? v : o)),
-      };
+      const b = next[bIdx];
+      const old = b.options[oIdx];
+      const options = b.options.map((o, k) => (k === oIdx ? v : o));
+      // إبقاء الإجابة الصحيحة مربوطة بالخيار بعد تعديل نصّه
+      const correct = b.correct?.map((c) => (c === old ? v : c));
+      next[bIdx] = { ...b, options, correct };
       return next;
     });
   };
@@ -155,9 +324,10 @@ export function DocImportDialog({
   const addOption = (bIdx: number) => {
     setBlocks((prev) => {
       const next = [...prev];
+      const b = next[bIdx];
       next[bIdx] = {
-        ...next[bIdx],
-        options: [...next[bIdx].options, "خيار جديد"],
+        ...b,
+        options: [...b.options, "خيار " + (b.options.length + 1)],
       };
       return next;
     });
@@ -166,28 +336,33 @@ export function DocImportDialog({
   const removeOption = (bIdx: number, oIdx: number) => {
     setBlocks((prev) => {
       const next = [...prev];
+      const b = next[bIdx];
+      if (b.options.length <= 2) return prev;
+      const removed = b.options[oIdx];
       next[bIdx] = {
-        ...next[bIdx],
-        options: next[bIdx].options.filter((_, k) => k !== oIdx),
+        ...b,
+        options: b.options.filter((_, k) => k !== oIdx),
+        correct: b.correct?.filter((c) => c !== removed),
       };
       return next;
     });
-  };
-
-  const removeBlock = (idx: number) => {
-    setBlocks((prev) => prev.filter((_, k) => k !== idx));
   };
 
   const toggleCorrect = (bIdx: number, oIdx: number) => {
     setBlocks((prev) => {
       const next = [...prev];
       const b = next[bIdx];
-      if (b.kind !== "radio" && b.kind !== "checkbox") return next;
+      if (b.kind !== "radio" && b.kind !== "checkbox" && b.kind !== "truefalse") {
+        return prev;
+      }
       const correct = b.correct ? [...b.correct] : [];
       const opt = b.options[oIdx];
-      if (correct.includes(opt)) {
-        correct.splice(correct.indexOf(opt), 1);
+      const at = correct.indexOf(opt);
+      if (at >= 0) {
+        correct.splice(at, 1);
       } else {
+        // الاختيار المنفرد وصح/خطأ يقبلان إجابة واحدة فقط
+        if (b.kind !== "checkbox") correct.length = 0;
         correct.push(opt);
       }
       next[bIdx] = { ...b, correct };
@@ -195,12 +370,95 @@ export function DocImportDialog({
     });
   };
 
-  const isCorrect = (bIdx: number, oIdx: number) => {
+  const isCorrect = (bIdx: number, oIdx: number): boolean => {
     const b = blocks[bIdx];
     return b.correct ? b.correct.includes(b.options[oIdx]) : false;
   };
 
-  const handleImport = () => {
+  /*============================ التحديد والحذف والترتيب ============================*/
+  const toggleSelect = (idx: number) => {
+    setSelected((prev) => {
+      const n = new Set(prev);
+      if (n.has(idx)) n.delete(idx);
+      else n.add(idx);
+      return n;
+    });
+  };
+
+  const allSelected = blocks.length > 0 && selected.size === blocks.length;
+
+  const toggleAll = () =>
+    setSelected(allSelected ? new Set() : new Set(blocks.map((_, i) => i)));
+
+  const deleteBlock = (idx: number) => {
+    setBlocks((prev) => prev.filter((_, k) => k !== idx));
+    setSelected((prev) => {
+      const n = new Set<number>();
+      prev.forEach((k) => {
+        if (k === idx) return;
+        n.add(k > idx ? k - 1 : k);
+      });
+      return n;
+    });
+  };
+
+  const deleteSelected = () => {
+    if (!selected.size) return;
+    const count = selected.size;
+    setBlocks((prev) => prev.filter((_, i) => !selected.has(i)));
+    setSelected(new Set());
+    toast.success(`تم حذف ${count} سؤالاً من المعاينة`);
+  };
+
+  const applyBulkPoints = () => {
+    const v = Number(bulkPoints);
+    const pts = Number.isFinite(v) && v >= 0 ? v : 1;
+    const count = selected.size;
+    setBlocks((prev) =>
+      prev.map((b, i) =>
+        selected.has(i) && b.kind !== "text" ? { ...b, points: pts } : b,
+      ),
+    );
+    toast.success(`تم تعيين درجة ${pts} لـ ${count} سؤالاً`);
+  };
+
+  const moveSelected = (mode: "top" | "bottom") => {
+    if (!selected.size) return;
+    setBlocks((prev) => {
+      const sel = prev.filter((_, i) => selected.has(i));
+      const rest = prev.filter((_, i) => !selected.has(i));
+      return mode === "top" ? [...sel, ...rest] : [...rest, ...sel];
+    });
+    setSelected(new Set());
+    toast.success(
+      mode === "top" ? "تم نقل المحدد إلى الأعلى" : "تم نقل المحدد إلى الأسفل",
+    );
+  };
+
+  const moveBlock = (idx: number, dir: -1 | 1) => {
+    const j = idx + dir;
+    if (j < 0 || j >= blocks.length) return;
+    setBlocks((prev) => {
+      const next = [...prev];
+      const tmp = next[idx];
+      next[idx] = next[j];
+      next[j] = tmp;
+      return next;
+    });
+    setSelected((prev) => {
+      const n = new Set(prev);
+      const hadI = n.has(idx);
+      const hadJ = n.has(j);
+      if (hadI) n.add(j);
+      else n.delete(j);
+      if (hadJ) n.add(idx);
+      else n.delete(idx);
+      return n;
+    });
+  };
+
+  /*============================ الإضافة إلى الامتحان ============================*/
+  const handleAddToForm = () => {
     if (blocks.length === 0) {
       toast.error("لا توجد أسئلة للاستيراد.");
       return;
@@ -208,20 +466,39 @@ export function DocImportDialog({
     const questions = blocksToQuestions(blocks, "مستورد من ملف");
     onImport(questions);
     onOpenChange(false);
-    // إعادة التعيين
-    setBlocks([]);
-    setText("");
-    setFile(null);
   };
+
+  const backToSelect = () => {
+    setStage("select");
+    setBlocks([]);
+    setSelected(new Set());
+    setShowRaw(false);
+    setError(null);
+  };
+
+  const stats = useMemo(
+    () => ({
+      total: blocks.length,
+      mcq: blocks.filter((b) => b.kind === "radio" || b.kind === "checkbox").length,
+      tf: blocks.filter((b) => b.kind === "truefalse").length,
+      essay: blocks.filter(
+        (b) => b.kind === "short" || b.kind === "paragraph",
+      ).length,
+      texts: blocks.filter((b) => b.kind === "text").length,
+      review: blocks.filter((b) => reviewReason(b) !== null).length,
+    }),
+    [blocks],
+  );
 
   if (!open) return null;
 
-  const typeOptions: Array<{ value: ParsedBlock["kind"]; label: string }> = [
-    { value: "radio", label: "اختيار من متعدد (واحد)" },
-    { value: "checkbox", label: "اختيار من متعدد (عدة)" },
-    { value: "short", label: "إجابة قصيرة" },
-    { value: "paragraph", label: "فقرة نصية" },
-    { value: "text", label: "نص وصفي (بدون إجابة)" },
+  const statChips: Array<[string, number, boolean]> = [
+    ["إجمالي", stats.total, false],
+    ["اختيار من متعدد", stats.mcq, false],
+    ["صح وخطأ", stats.tf, false],
+    ["مقالي", stats.essay, false],
+    ["نصوص وصفية", stats.texts, false],
+    ["يحتاج إلى مراجعة", stats.review, true],
   ];
 
   return (
@@ -231,153 +508,358 @@ export function DocImportDialog({
         <DialogHeader className="shrink-0 sticky top-0 z-10 bg-background -mx-4 sm:-mx-6 px-4 sm:px-6 py-1">
           <DialogTitle className="flex items-center gap-2">
             <FileText className="h-5 w-5 text-primary" aria-hidden />
-            استيراد أسئلة من ملف / نص
+            {stage === "review"
+              ? "مراجعة الأسئلة المستوردة"
+              : "استيراد الأسئلة من Word"}
           </DialogTitle>
           <DialogDescription>
-            استخرج الأسئلة والاختيارات من ملف نصي (.txt) أو PDF أو وورد (.doc / .docx)،
-            أو الصق النص مباشرة. راجع كل سؤال وعدّل عليه قبل الاستيراد إلى نموذجك.
+            {stage === "review"
+              ? "راجع كل سؤال وعدّل عليه قبل إضافته — الأسئلة الجديدة تُضاف إلى نهاية الامتحان دون مساس بما هو موجود."
+              : "قم برفع ملف Word يحتوي على أسئلة الامتحان، وسيقوم النظام باستخراج الأسئلة والاختيارات تلقائيًا."}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-3">
-          {/* مصدر الاستيراد */}
-          <section className="surface-card p-4 rounded-xl border border-border">
-            <div className="flex flex-col gap-3">
-              <div className="flex items-center gap-2 text-sm font-semibold">
-                <Upload className="h-4 w-4" aria-hidden />
-                ملف نصي / PDF / وورد (.doc / .docx)
-              </div>
-              <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
-                <button
-                  onClick={() => fileInput.current?.click()}
-                  className="rounded-xl border border-dashed border-input bg-surface px-4 py-3 text-sm hover:bg-secondary transition"
-                >
-                  <FileUp className="h-4 w-4 mr-2" aria-hidden />
-                                اختر ملف
-                </button>
-                <input
-                  ref={fileInput}
-                  type="file"
-                  accept=".txt,.md,.pdf,.docx,.doc"
-                  className="hidden"
-                  onChange={handleFileChange}
-                />
-                {file && (
-                  <span className="text-xs text-muted-foreground">
-                    {file.name} ({Math.round(file.size / 1024)} ك.ب)
-                    {pdfLoading &&
-                      file.name.toLowerCase().endsWith(".pdf") && (
-                        <span className="ml-2 animate-pulse text-xs text-primary">
-                          (جارٍ استخراج النص من PDF…)
-                        </span>
-                      )}
+        {/* ============================ اختيار الملف ============================ */}
+        {stage === "select" && (
+          <div className="flex flex-col gap-3">
+            <section
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={handleDrop}
+              onClick={() => fileInput.current?.click()}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  fileInput.current?.click();
+                }
+              }}
+              className={cn(
+                "cursor-pointer rounded-xl border-2 border-dashed p-6 sm:p-8 text-center transition",
+                dragOver
+                  ? "border-primary bg-primary/5"
+                  : "border-input bg-surface/50 hover:bg-secondary/50",
+              )}
+            >
+              <FileUp className="mx-auto h-8 w-8 text-primary" aria-hidden />
+              <p className="mt-3 text-sm font-bold">
+                اسحب ملف Word وأفلته هنا
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                أو اضغط لاختيار ملف من جهازك — الصيغ المدعومة:{" "}
+                <b>.docx</b> و <b>.doc</b>
+              </p>
+            </section>
+            <input
+              ref={fileInput}
+              type="file"
+              accept=".docx,.doc,.txt,.md,.pdf"
+              className="hidden"
+              onChange={(e) => {
+                acceptFile(e.target.files?.[0]);
+                e.target.value = "";
+              }}
+            />
+
+            {pendingFile && (
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-surface px-3 py-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <FileText
+                    className="h-4 w-4 shrink-0 text-primary"
+                    aria-hidden
+                  />
+                  <span className="truncate text-sm font-semibold">
+                    {pendingFile.name}
                   </span>
-                )}
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    ({formatSize(pendingFile.size)})
+                  </span>
+                </div>
+                <button
+                  onClick={() => setPendingFile(null)}
+                  className="rounded p-1 text-muted-foreground transition hover:text-destructive"
+                  title="إزالة الملف"
+                >
+                  <X className="h-4 w-4" aria-hidden />
+                </button>
               </div>
+            )}
 
-              <div className="h-1 w-full"></div>
+            {error && (
+              <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                <div className="flex gap-2">
+                  <AlertTriangle
+                    className="mt-0.5 h-4 w-4 shrink-0"
+                    aria-hidden
+                  />
+                  <span className="whitespace-pre-wrap">{error}</span>
+                </div>
+              </div>
+            )}
 
+            <section className="surface-card rounded-xl border border-border p-4">
               <div className="flex items-center gap-2 text-sm font-semibold">
-                <RotateCcw className="h-4 w-4" aria-hidden />
-                نسخ ولصق نص
+                <ClipboardPaste className="h-4 w-4" aria-hidden />
+                لصق وتحليل نص (بديل عن الملف)
               </div>
               <textarea
-                value={text}
-                onChange={handlePasteChange}
-                placeholder="الصق نص الأسئلة هنا… (كل سطر فارغ يبدأ سؤالاً جديداً)"
-                rows={4}
-                className="rounded-xl border border-input bg-surface px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20 w-full"
+                value={pasteText}
+                onChange={(e) => setPasteText(e.target.value)}
+                placeholder="الصق نص الأسئلة هنا… (يدعم الترقيم العربي A-D وأ، ب، ج، د)"
+                rows={3}
+                className="mt-2 w-full rounded-xl border border-input bg-surface px-3 py-2 text-sm outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
               />
               <button
-                onClick={handlePasteImport}
-                disabled={parsing || !text.trim()}
-                className="rounded-xl bg-primary px-4 py-2 text-sm font-bold text-primary-foreground disabled:opacity-50 transition hover:opacity-90"
+                onClick={startPasteImport}
+                disabled={!pasteText.trim()}
+                className="mt-2 rounded-xl border border-border bg-surface px-4 py-2 text-sm font-semibold transition hover:bg-secondary disabled:opacity-50"
               >
-                {parsing ? "جارٍ التحليل…" : "حلّل النص الصق"}
+                حلّل النص الملصوق
               </button>
-            </div>
-          </section>
-
-          {/* معاينة النص المستخرج من الملف */}
-          {rawExtractedText && (
-            <section className="surface-card p-0 rounded-xl border border-border overflow-hidden mb-3">
-              <div className="p-4 border-b border-border flex items-center justify-between bg-surface/50">
-                <div className="flex items-center gap-2">
-                  <FileText className="h-4 w-4 text-muted-foreground" aria-hidden />
-                  <span className="font-semibold">معاينة النص المستخرج من الملف</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  {file && (
-                    <span className="text-xs text-muted-foreground">
-                      {file.name} ({Math.round(file.size / 1024)} ك.ب)
-                    </span>
-                  )}
-                  <button
-                    onClick={() => setPreviewOpen(true)}
-                    className="rounded border border-input bg-surface px-2 py-1.5 text-xs hover:bg-secondary transition"
-                    title="افتح معاينة كاملة"
-                  >
-                    <Eye className="h-3.5 w-3.5" aria-hidden />
-                  </button>
-                </div>
-              </div>
-              <div className="p-4">
-                <textarea
-                  value={rawExtractedText}
-                  readOnly
-                  rows={6}
-                  className="rounded-xl border border-input bg-surface px-3 py-2 text-sm outline-none w-full font-mono text-sm"
-                />
-                <p className="mt-2 text-xs text-muted-foreground">
-                  هذا النص المستخرج مباشرة من الملف. يتم تقسيمه تلقائياً إلى أسئلة أدناه — يمكنك تعديل كل سؤال قبل الاستيراد.
-                </p>
-              </div>
             </section>
-          )}
+          </div>
+        )}
 
-          {/* معاينة الأسئلة */}
-          {blocks.length > 0 && (
-            <section className="surface-card p-0 rounded-xl border border-border overflow-hidden">
-              <div className="p-4 border-b border-border flex items-center justify-between bg-surface/50">
-                <div className="flex items-center gap-2">
-                  <LayoutList className="h-4 w-4 text-muted-foreground" aria-hidden />
-                  <span className="font-semibold">
-                    {blocks.some((b) => b.kind === "text")
-                      ? `المستخرج (${blocks.filter((b) => b.kind !== "text").length} سؤال + ${blocks.filter((b) => b.kind === "text").length} نص وصفي)`
-                      : `الأسئلة المستخرجة (${blocks.length})`}
-                  </span>
-                </div>
-                <button
-                  onClick={handleImport}
-                  disabled={parsing}
-                  className="rounded-lg bg-primary px-4 py-2 text-sm font-bold text-primary-foreground disabled:opacity-50 transition hover:opacity-90"
+        {/* ============================ التحليل ============================ */}
+        {stage === "analyzing" && (
+          <div className="flex flex-1 flex-col items-center justify-center gap-4 py-10">
+            <Loader2
+              className="h-10 w-10 animate-spin text-primary"
+              aria-hidden
+            />
+            <p className="text-sm font-bold">{analyzingMsg}</p>
+            {pendingFile && (
+              <p className="max-w-full truncate text-xs text-muted-foreground">
+                {pendingFile.name} ({formatSize(pendingFile.size)})
+              </p>
+            )}
+            <div className="h-1.5 w-56 overflow-hidden rounded-full bg-secondary">
+              <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
+            </div>
+          </div>
+        )}
+
+        {/* ============================ شاشة المراجعة ============================ */}
+        {stage === "review" && (
+          <div className="flex flex-col gap-3">
+            {/* الإحصائيات */}
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+              {statChips.map(([label, value, warn]) => (
+                <div
+                  key={label}
+                  className={cn(
+                    "rounded-lg border px-2 py-2 text-center",
+                    warn && value > 0
+                      ? "border-amber-500/50 bg-amber-500/10"
+                      : "border-border bg-surface",
+                  )}
                 >
-                  {parsing ? "جارٍ الاستيراد…" : "استورد الأسئلة إلى النموذج"}
+                  <div
+                    className={cn(
+                      "text-lg font-black leading-tight",
+                      warn && value > 0 ? "text-amber-600" : "text-foreground",
+                    )}
+                  >
+                    {value}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">{label}</div>
+                </div>
+              ))}
+            </div>
+
+            {stats.review > 0 && (
+              <div className="flex items-start gap-2 rounded-xl border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400">
+                <AlertTriangle
+                  className="mt-0.5 h-4 w-4 shrink-0"
+                  aria-hidden
+                />
+                <span>
+                  {stats.review} سؤالاً يحتاج إلى مراجعة — راجع الإجابة الصحيحة
+                  أو نص السؤال قبل الإضافة إلى الامتحان.
+                </span>
+              </div>
+            )}
+
+            {/* شريط الأدوات الجماعية */}
+            <div className="surface-card flex flex-wrap items-center gap-2 rounded-xl border border-border p-3 text-xs">
+              <label className="flex cursor-pointer items-center gap-1.5 font-semibold">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={toggleAll}
+                  className="h-4 w-4"
+                />
+                تحديد الكل
+              </label>
+              <span className="text-muted-foreground">
+                ({selected.size} محدد)
+              </span>
+              <div className="grow" />
+              <button
+                onClick={deleteSelected}
+                disabled={!selected.size}
+                className="inline-flex items-center gap-1 rounded-lg border border-destructive/40 px-2.5 py-1.5 font-semibold text-destructive transition hover:bg-destructive/10 disabled:opacity-40"
+              >
+                <Trash2 className="h-3.5 w-3.5" aria-hidden /> حذف المحدد
+              </button>
+              <div className="flex items-center gap-1">
+                <span className="text-muted-foreground">الدرجة:</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={bulkPoints}
+                  onChange={(e) => setBulkPoints(e.target.value)}
+                  className="w-14 rounded border border-input bg-background px-1.5 py-1 text-center outline-none focus:border-ring"
+                  aria-label="الدرجة المطلوبة تطبيقها"
+                />
+                <button
+                  onClick={applyBulkPoints}
+                  disabled={!selected.size}
+                  className="rounded-lg border border-border px-2.5 py-1.5 font-semibold transition hover:bg-secondary disabled:opacity-40"
+                >
+                  تغيير الدرجات
                 </button>
               </div>
+              <button
+                onClick={() => moveSelected("top")}
+                disabled={!selected.size}
+                className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 font-semibold transition hover:bg-secondary disabled:opacity-40"
+                title="نقل المحدد إلى الأعلى"
+              >
+                <ArrowUp className="h-3.5 w-3.5" aria-hidden /> إعادة ترتيب
+                (لأعلى)
+              </button>
+              <button
+                onClick={() => moveSelected("bottom")}
+                disabled={!selected.size}
+                className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 font-semibold transition hover:bg-secondary disabled:opacity-40"
+                title="نقل المحدد إلى الأسفل"
+              >
+                <ArrowDown className="h-3.5 w-3.5" aria-hidden /> (لأسفل)
+              </button>
+            </div>
 
-              <div className="p-4 space-y-3">
-                {blocks.map((b, idx) => (
+            {/* معاينة النص المستخرج */}
+            {rawText && (
+              <div className="rounded-xl border border-border bg-surface/50">
+                <button
+                  onClick={() => setShowRaw((v) => !v)}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-xs font-semibold"
+                >
+                  <Eye className="h-3.5 w-3.5" aria-hidden />
+                  {showRaw ? "إخفاء" : "عرض"} النص المستخرج من الملف
+                </button>
+                {showRaw && (
+                  <textarea
+                    value={rawText}
+                    readOnly
+                    rows={8}
+                    className="w-full border-t border-border bg-background px-3 py-2 font-mono text-xs leading-relaxed outline-none"
+                  />
+                )}
+              </div>
+            )}
+
+            {/* قائمة الأسئلة */}
+            <div className="space-y-3">
+              {blocks.map((b, idx) => {
+                const reason = reviewReason(b);
+                const isSel = selected.has(idx);
+                const answerable =
+                  b.kind === "radio" ||
+                  b.kind === "checkbox" ||
+                  b.kind === "truefalse";
+                return (
                   <div
-                    key={b.title + idx}
-                    className="rounded-lg border border-border p-3 bg-surface/30"
+                    key={idx}
+                    className={cn(
+                      "rounded-lg border bg-surface/30 p-3",
+                      isSel
+                        ? "border-primary/60 ring-1 ring-primary/30"
+                        : "border-border",
+                    )}
                   >
-                    <div className="flex flex-col sm:flex-row sm:items-start gap-2 mb-2">
-                      <div className="flex-1 min-w-0">
-                        <label className="block text-xs font-semibold text-muted-foreground mb-1">
-                          {b.kind === "text" ? `نص وصفي #${idx + 1}` : `سؤال #${idx + 1}`}
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={isSel}
+                        onChange={() => toggleSelect(idx)}
+                        className="h-4 w-4"
+                        aria-label={`تحديد السؤال ${idx + 1}`}
+                      />
+                      <span className="text-xs font-black text-muted-foreground">
+                        #{idx + 1}
+                      </span>
+                      <span className="rounded bg-secondary px-1.5 py-0.5 text-[11px] font-semibold">
+                        {kindLabel(b.kind)}
+                      </span>
+                      {reason && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-bold text-amber-600"
+                          title={reason}
+                        >
+                          <AlertTriangle className="h-3 w-3" aria-hidden />
+                          يحتاج إلى مراجعة: {reason}
+                        </span>
+                      )}
+                      <div className="grow" />
+                      {b.kind !== "text" && (
+                        <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                          الدرجة
+                          <PointsInput
+                            value={b.points ?? 1}
+                            onCommit={(v) => patchBlock(idx, { points: v })}
+                          />
                         </label>
-                        <input
-                          value={b.title}
-                          onChange={(e) => updateBlockTitle(idx, e.target.value)}
-                          className="rounded border border-input bg-background px-2 py-1.5 text-sm outline-none focus:border-ring w-full"
-                          placeholder="نص السؤال…"
-                        />
-                      </div>
+                      )}
+                      <button
+                        onClick={() => moveBlock(idx, -1)}
+                        disabled={idx === 0}
+                        className="rounded p-1 text-muted-foreground transition hover:bg-secondary disabled:opacity-30"
+                        title="تحريك لأعلى"
+                      >
+                        <ArrowUp className="h-3.5 w-3.5" aria-hidden />
+                      </button>
+                      <button
+                        onClick={() => moveBlock(idx, 1)}
+                        disabled={idx === blocks.length - 1}
+                        className="rounded p-1 text-muted-foreground transition hover:bg-secondary disabled:opacity-30"
+                        title="تحريك لأسفل"
+                      >
+                        <ArrowDown className="h-3.5 w-3.5" aria-hidden />
+                      </button>
+                      <button
+                        onClick={() => deleteBlock(idx)}
+                        className="rounded p-1.5 text-destructive transition hover:bg-destructive/10"
+                        title="حذف السؤال"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                      </button>
+                    </div>
+
+                    <input
+                      value={b.title}
+                      onChange={(e) => patchBlock(idx, { title: e.target.value })}
+                      className="w-full rounded border border-input bg-background px-2 py-1.5 text-sm outline-none focus:border-ring"
+                      placeholder={
+                        b.kind === "text"
+                          ? "عنوان المقروءة (اختياري)"
+                          : "نص السؤال…"
+                      }
+                    />
+
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-semibold text-muted-foreground">
+                        النوع:
+                      </span>
                       <select
                         value={b.kind}
                         onChange={(e) =>
-                          updateBlockType(idx, e.target.value as ParsedBlock["kind"])
+                          changeKind(idx, e.target.value as ParsedBlock["kind"])
                         }
                         className="rounded border border-input bg-background px-2 py-1.5 text-xs outline-none focus:border-ring"
                       >
@@ -387,25 +869,20 @@ export function DocImportDialog({
                           </option>
                         ))}
                       </select>
-                      <button
-                        onClick={() => removeBlock(idx)}
-                        className="rounded p-1.5 text-destructive hover:bg-destructive/10 transition"
-                        title="احذف السؤال"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" aria-hidden />
-                      </button>
                     </div>
 
-                    {b.kind === "radio" || b.kind === "checkbox" ? (
-                      <div className="space-y-2 mt-2">
-                        <label className="text-xs font-semibold text-muted-foreground">
-                          الخيرات
-                        </label>
+                    {answerable && (
+                      <div className="mt-2 space-y-1.5">
+                        <span className="text-xs font-semibold text-muted-foreground">
+                          الاختيارات
+                          {b.kind !== "truefalse" &&
+                            " — اضغط الدائرة بجانب الخيار لتحديد الإجابة الصحيحة"}
+                        </span>
                         <div className="space-y-1.5">
                           {b.options.map((opt, oIdx) => (
                             <div
                               key={oIdx}
-                              className="flex items-center gap-2 bg-background p-2 rounded border border-input/50"
+                              className="flex items-center gap-2 rounded border border-input/50 bg-background p-2"
                             >
                               <button
                                 type="button"
@@ -416,116 +893,135 @@ export function DocImportDialog({
                                     ? "border-primary bg-primary text-white"
                                     : "border-input text-muted-foreground hover:border-primary/50",
                                 )}
-                                title={isCorrect(idx, oIdx) ? "إزالة التحديد كإجابة صحيحة" : "تحديد كإجابة صحيحة"}
+                                title={
+                                  isCorrect(idx, oIdx)
+                                    ? "إزالة التحديد كإجابة صحيحة"
+                                    : "تحديد كإجابة صحيحة"
+                                }
                                 aria-pressed={isCorrect(idx, oIdx)}
                               >
                                 {isCorrect(idx, oIdx) ? (
-                                  <CheckCircle2 className="h-3 w-3 fill-current" aria-hidden />
+                                  <CheckCircle2
+                                    className="h-3 w-3 fill-current"
+                                    aria-hidden
+                                  />
                                 ) : null}
                               </button>
                               <input
                                 value={opt}
-                                onChange={(e) => updateBlockOption(idx, oIdx, e.target.value)}
-                                className="flex-1 bg-transparent border-none outline-none text-sm min-w-0"
+                                onChange={(e) =>
+                                  updateOption(idx, oIdx, e.target.value)
+                                }
+                                className="min-w-0 flex-1 border-none bg-transparent text-sm outline-none"
                                 placeholder="خيار…"
                               />
                               <button
                                 onClick={() => removeOption(idx, oIdx)}
                                 disabled={b.options.length <= 2}
-                                className="rounded p-1 text-muted-foreground hover:text-destructive transition disabled:opacity-40"
+                                className="rounded p-1 text-muted-foreground transition hover:text-destructive disabled:opacity-40"
                                 title="احذف الخيار"
                               >
                                 <Trash2 className="h-3 w-3" aria-hidden />
                               </button>
                             </div>
                           ))}
-                          <button
-                            onClick={() => addOption(idx)}
-                            className="text-xs text-primary hover:text-primary/80 underline underline-offset-4 px-2 py-1"
-                          >
-                            + إضافة خيار
-                          </button>
+                          {b.kind !== "truefalse" && (
+                            <button
+                              onClick={() => addOption(idx)}
+                              className="px-2 py-1 text-xs text-primary underline underline-offset-4 hover:text-primary/80"
+                            >
+                              + إضافة خيار
+                            </button>
+                          )}
                         </div>
                       </div>
-                    ) : b.kind === "text" ? (
+                    )}
+
+                    {b.kind === "text" && (
                       <div className="mt-2 space-y-1">
-                        <label className="text-xs font-semibold text-muted-foreground">
+                        <span className="text-xs font-semibold text-muted-foreground">
                           نص المقروءة (يُعرض كنص وصفي بدون إجابة)
-                        </label>
+                        </span>
                         <textarea
                           value={b.text ?? ""}
-                          onChange={(e) => updateBlockText(idx, e.target.value)}
+                          onChange={(e) =>
+                            patchBlock(idx, { text: e.target.value })
+                          }
                           rows={4}
-                          className="w-full rounded border border-input bg-background px-2 py-1.5 text-sm outline-none focus:border-ring resize-y leading-relaxed"
+                          className="w-full resize-y rounded border border-input bg-background px-2 py-1.5 text-sm leading-relaxed outline-none focus:border-ring"
                           placeholder="نص الفقرة التمهيدية…"
                         />
                       </div>
-                    ) : (
-                      b.correct && (
-                        <div className="mt-2 flex items-center gap-1 text-xs text-green-700 bg-green-50/50 rounded px-2 py-1">
-                          <CheckCircle2 className="h-3 w-3" aria-hidden />
-                          <span>مفتاح الإجابة المقترح: <b>{b.correct.join("، ")}</b></span>
-                        </div>
-                      )
+                    )}
+
+                    {(b.kind === "short" || b.kind === "paragraph") && (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        سؤال مقالي — تُكتب الإجابة نصاً من الطالب.
+                        {b.correct && b.correct.length > 0 && (
+                          <span className="text-green-700">
+                            {" "}
+                            مفتاح الإجابة المقترح: <b>{b.correct.join("، ")}</b>
+                          </span>
+                        )}
+                      </p>
                     )}
                   </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {!blocks.length && text.trim() && !file ? (
-            <div className="p-4 rounded-xl border border-dashed border-input bg-surface/50 text-center text-sm text-muted-foreground">
-              <AlertTriangle className="h-4 w-4 mx-auto mb-2" aria-hidden />
-              لم يتم استخراج أسئلة بعد. اضغط "حلّل النص الصق" أعلاه.
+                );
+              })}
             </div>
-          ) : null}
-        </div>
 
-        <DialogFooter className="shrink-0 sticky bottom-0 z-10 bg-background -mx-4 sm:-mx-6 px-4 sm:px-6 py-3 border-t border-border/50 -mb-4 sm:-mb-6">
-          <div className="flex flex-col-reverse sm:flex-row w-full gap-2 sm:gap-2 sm:justify-end">
-            <Button onClick={() => onOpenChange(false)} variant="outline" className="w-full sm:w-auto">
-              إلغاء
-            </Button>
-            <Button
-              onClick={handleImport}
-              disabled={blocks.length === 0 || parsing}
-              className="w-full sm:w-auto"
-            >
-              {parsing ? "جاري…" : "تأكيد واستيراد إلى النموذج"}
-            </Button>
+            {blocks.length === 0 && (
+              <div className="rounded-xl border border-dashed border-input bg-surface/50 p-4 text-center text-sm text-muted-foreground">
+                <AlertTriangle className="mx-auto mb-2 h-4 w-4" aria-hidden />
+                لا توجد أسئلة في المعاينة — عُد واختر ملفاً آخر.
+              </div>
+            )}
+          </div>
+        )}
+
+        <DialogFooter className="shrink-0 sticky bottom-0 z-10 -mx-4 -mb-4 border-t border-border/50 bg-background px-4 py-3 sm:-mx-6 sm:-mb-6 sm:px-6">
+          <div className="flex w-full flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            {stage === "review" ? (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={backToSelect}
+                  className="w-full sm:w-auto"
+                >
+                  رجوع لاختيار ملف آخر
+                </Button>
+                <Button
+                  onClick={handleAddToForm}
+                  disabled={blocks.length === 0}
+                  className="w-full sm:w-auto"
+                >
+                  <Plus className="h-4 w-4" aria-hidden />
+                  إضافة الأسئلة إلى الامتحان ({blocks.length})
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => onOpenChange(false)}
+                  disabled={stage === "analyzing"}
+                  className="w-full sm:w-auto"
+                >
+                  إلغاء
+                </Button>
+                <Button
+                  onClick={startFileImport}
+                  disabled={!pendingFile || stage === "analyzing"}
+                  className="w-full sm:w-auto"
+                >
+                  <Upload className="h-4 w-4" aria-hidden />
+                  بدء الاستيراد
+                </Button>
+              </>
+            )}
           </div>
         </DialogFooter>
-        {/* نافذة معاينة كاملة للنص المستخرج */}
-        <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-          <DialogContent className="w-[calc(100vw-1rem)] sm:w-[calc(100vw-2rem)] max-w-2xl h-[90dvh] sm:h-[80dvh] p-4 sm:p-6 flex flex-col gap-0 overflow-hidden">
-            <DialogClose />
-            <DialogHeader className="shrink-0">
-              <DialogTitle className="flex items-center gap-2">
-                <Eye className="h-5 w-5 text-primary" aria-hidden />
-                معاينة النص المستخرج
-              </DialogTitle>
-              <DialogDescription>
-                {file ? (
-                  <span className="text-sm text-muted-foreground">
-                    {file.name} ({Math.round(file.size / 1024)} ك.ب)
-                  </span>
-                ) : null}
-              </DialogDescription>
-            </DialogHeader>
-            <div className="mt-4 flex-1 overflow-auto bg-surface p-4 rounded-xl border border-border font-mono text-sm leading-relaxed max-h-[60vh]">
-              {rawExtractedText}
-            </div>
-            <DialogFooter className="mt-4">
-              <Button onClick={() => setPreviewOpen(false)} className="ml-auto">
-                إغلاق
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
       </DialogContent>
     </Dialog>
   );
 }
-

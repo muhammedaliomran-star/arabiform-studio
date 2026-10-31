@@ -12,6 +12,20 @@ function U([int[]]$codes) { return (-join ($codes | ForEach-Object { [char]$_ })
 $arCodes = 0x0623, 0x0625, 0x0622, 0x0627, 0x0628, 0x062C, 0x062F, 0x0647, 0x0632, 0x062D, 0x0637, 0x064A
 $AR = '[' + (($arCodes | ForEach-Object { '\u{0:x4}' -f $_ }) -join '') + ']'
 
+# true/false words + answer-key regexes (mirrors TS TF_WORD_RE/TF_MARKER_RE/ANSWER_*_RE)
+$TF_SAH = U 0x0635, 0x062D                                     # sah   (correct-true)
+$TF_KHATA = U 0x062E, 0x0637, 0x0623                            # khata (false)
+$TF_SAWAB = U 0x0635, 0x0648, 0x0627, 0x0628                    # sawab (variant of sah)
+$TF_ALT = '(?:\u0635\u062D|\u0635\u0648\u0627\u0628|\u062E\u0637\u0623)'
+$TF_WORD = '^[\uFF08(]?\s*' + $TF_ALT + '\s*[\uFF09)]?$'
+$TF_MARKER = '[\uFF08(]?\s*(?:\u0635\u062D|\u0635\u0648\u0627\u0628)\s*(?:/|\u2013|\u2014|-|\u060C|,|\u0648|\u0623\u0645|\u0623\u0648)\s*\u062E\u0637\u0623\s*[\uFF09)]?'
+$TF_TITLE_DEFAULT = U 0x0635, 0x062D, 0x20, 0x0623, 0x0645, 0x20, 0x062E, 0x0637, 0x0623  # sah am khata
+$ANS_INLINE = '^(?:\u0627\u0644\u0625\u062C\u0627\u0628\u0629|\u0627\u0644\u0627\u062C\u0627\u0628\u0629|\u0627\u0644\u062C\u0627\u0628\u0629)(?:\s*\u0627\u0644\u0635\u062D\u064A\u062D\u0629)?(?:\s*\u0647\u064A)?\s*[:\uFF1A]\s*(?:\u0627\u0644\u062E\u064A\u0627\u0631\s+)?(' + $TF_ALT + '|[A-Za-z]|[\u0623-\u064A])\.?\s*$'
+$ANS_EN = '^(?:answer|correct(?:\s*answer)?|the\s*answer)\s*(?:is)?\s*[:\uFF1A]\s*(?:option\s*)?(' + $TF_ALT + '|[A-Za-z])\.?\s*$'
+$ANS_KEY = '^(?:[\u0660-\u0669]{1,3}|\d{1,3})\s*[\-\.\)\u2013\uFF1D\uFF1A:]\s*(?:\u0625\u062C\u0627\u0628\u0629\s*)?(' + $TF_ALT + '|[A-Za-z]|[\u0623-\u064A])\.?\s*$'
+$OPT_LETTER_LINE = '^[\[\u0660-\u0669]*\s*(?:\[\[HL\]\]\s*)?([\u0623\u0625\u0622\u0627\u0647\u0640\u062F\u062C\u0632\u062D\u0637\u064A\u0643\u0644\u0645\u0646\u0633\u0639\u0641\u0635\u0642\u0631\u0634\u062A\u062B\u062E\u0630\u0636\u0638\u063A]|[A-Da-d])(?:\s*[\)\.\uFF1A:])?(?:\s*\[\[/HL\]\])?$'
+$OPT_LETTERS = U 0x0623, 0x0628, 0x062C, 0x062F, 0x0647, 0x0648, 0x0632, 0x062D, 0x0637, 0x064A, 0x0643, 0x0644, 0x0645, 0x0646, 0x0633, 0x0639, 0x0641, 0x0635, 0x0642, 0x0631, 0x0634, 0x062A, 0x062B, 0x062E, 0x0630, 0x0636, 0x0638, 0x063A
+
 # passage/intro block markers (mirrors PASSAGE_MARK_RE / PASSAGE_TITLE_RE in doc-parser.ts)
 $PASSAGE_MARK = '^[\u25A0\u25AA\u25CF\u2605\u25A1\u2B1B\u258C]\s*\S'
 $PASSAGE_TITLE = '^(?:\u0646\u0635|\u0627\u0644\u0646\u0635|\u0627\u0644\u0642\u0631\u0627\u0621\u0629|\u0627\u0644\u0642\u0635\u0629|\u0627\u0644\u0627\u0633\u062A\u0645\u0627\u0639|\u0627\u0644\u0645\u0642\u0631\u0648\u0621|\u0627\u0644\u0646\u0635 \u0627\u0644\u062A\u0645\u0647\u0649\u062F\u064A)\s*[\(\uFF08]\s*\S'
@@ -98,6 +112,8 @@ function Strip-SourceNumber([string]$s) {
     $t = $t -creplace '^[\u0621-\u064A]{1,3}[\.\-]\s*[\u0660-\u0669]{1,3}[\)\.\-\uFF1D\s]\s*', ''
     $t = $t -creplace '^[\u0660-\u0669]{1,3}[\.\uFF1E\u066B\u06D4]\s*', ''
     $t = $t -creplace '^\d{1,3}[\.\uFF1E]\s*', ''
+    $t = $t -creplace '^\d{1,3}[\-\)\u2013\uFF1D]\s*', ''
+    $t = $t -creplace '^[\u0660-\u0669]{1,3}[\-\)\u2013\uFF1D]\s*', ''
     $t = $t -creplace '^[\u0660-\u0669]{1,3}\s+', ''
     $t = $t -creplace '^\d{1,3}\s+', ''
     $t = $t -creplace '^[\u0621-\u064A]{1,3}[\.\-]\s+', ''
@@ -110,7 +126,84 @@ function Test-QuestionNumberLine([string]$s) {
     if ($s -cmatch '^[\u0660-\u0669]{1,3}[\.\uFF1E\u066B\u06D4]') { return $true }
     if ($s -cmatch '^\d{1,3}[\.\uFF1E]') { return $true }
     if ($s -cmatch '^(?:[\u0660-\u0669]{1,3}|\d{1,3})\s+[\u0621-\u064A]') { return $true }
+    # "1- ?" / "3) ...?" / "2- ... (sah / khata)" -- digit+separator and (? at end OR tf marker)
+    if ($s -cmatch '^(?:[\u0660-\u0669]{1,3}|\d{1,3})[\-\)\u2013\uFF1D]\s*\S') {
+        if ($s -cmatch '[\u061F?]\s*$') { return $true }
+        if ($s -cmatch $TF_MARKER) { return $true }
+    }
     return $false
+}
+
+# mirrors isAnswerLine in doc-parser.ts (inline/en/key answer formats)
+function Test-AnswerLine([string]$s) {
+    return ($s -cmatch $ANS_INLINE -or $s -cmatch $ANS_EN -or $s -cmatch $ANS_KEY)
+}
+
+# mirrors toWesternNum: arabic-indic -> western digits
+function Convert-WesternNum([string]$s) {
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($ch in $s.ToCharArray()) {
+        $c = [int]$ch
+        if ($c -ge 0x0660 -and $c -le 0x0669) { [void]$sb.Append([string][char](0x30 + ($c - 0x0660))) }
+        else { [void]$sb.Append($ch) }
+    }
+    $n = 0
+    if ([int]::TryParse($sb.ToString(), [ref]$n)) { return $n }
+    return 0
+}
+
+# mirrors extractLeadingNum
+function Get-LeadingNum([string]$s) {
+    $m = [regex]::Match($s, '^(?:[A-Za-z]{1,4}[\.\-])?([\u0660-\u0669]{1,3}|\d{1,3})')
+    if (-not $m.Success) { return 0 }
+    return Convert-WesternNum $m.Groups[1].Value
+}
+
+# mirrors normalizeTFWord: sawab -> sah, strip parens/space
+function Get-NormalizeTF([string]$s) {
+    $t = $s -replace '[\uFF08()\uFF09\s]', ''
+    if ($t -ceq $TF_SAWAB) { return $TF_SAH }
+    return $t
+}
+
+function Test-TFWord([string]$s) { return ($s -cmatch $TF_WORD) }
+function Test-OptionLetterLine([string]$s) { return ($s -cmatch $OPT_LETTER_LINE) }
+
+# mirrors letterToIndex: letter (ar/en) -> option index, $null when unknown
+function Get-LetterIndex([string]$raw) {
+    $t = $raw.Trim()
+    if ($t -cmatch '^[A-Za-z]$') {
+        $idx = 'ABCDEFGHIJ'.IndexOf($t.ToUpper())
+        if ($idx -ge 0) { return $idx }
+        return $null
+    }
+    $n = $t -replace '[\u064B-\u0652\u0640\u0670]', ''
+    $c = $n
+    if ($n -cmatch '^[\u0623\u0625\u0622\u0627]$') { $c = [string][char]0x0623 }
+    $idx = $OPT_LETTERS.IndexOf($c)
+    if ($idx -ge 0) { return $idx }
+    return $null
+}
+
+# mirrors resolveAnswerToken: token -> option text, $null when it cannot match (never guess)
+function Resolve-AnswerToken([string]$token, [string[]]$options) {
+    $t = $token.Trim()
+    if ($t -ceq $TF_SAH -or $t -ceq $TF_SAWAB -or $t -ceq $TF_KHATA) {
+        $w = Get-NormalizeTF $t
+        foreach ($o in $options) { if ((Get-NormalizeTF $o.Trim()) -ceq $w) { return $o } }
+        return $null
+    }
+    $idx = Get-LetterIndex $t
+    if ($null -eq $idx) { return $null }
+    if ($idx -ge $options.Length) { return $null }
+    return $options[$idx]
+}
+
+# mirrors extractSourceNo
+function Get-SourceNo([string]$s) {
+    $v = Get-LeadingNum ((Strip-HL $s).Trim())
+    if ($v -gt 0) { return $v }
+    return $null
 }
 
 function Test-SectionHeader([string]$s) {
@@ -264,10 +357,37 @@ function Parse-DocText([string]$raw) {
     $qnum = 0
     $i = 0
 
+    # ---- first pass: answer key (inline "الإجابة: ب" / end-of-file "1- ب") ----
+    $answerKey = @{}
+    $lastSrcNo = 0
+    foreach ($rawLine in $lines) {
+        $s = (Strip-HL $rawLine).Trim()
+        if ($s.Length -eq 0) { continue }
+        if (Test-QuestionNumberLine $s) {
+            $v = Get-LeadingNum $s
+            if ($v -gt 0) { $lastSrcNo = $v }
+        }
+        $inline = [regex]::Match($s, $ANS_INLINE)
+        if (-not $inline.Success) { $inline = [regex]::Match($s, $ANS_EN) }
+        if ($inline.Success) {
+            if ($lastSrcNo -gt 0) { $answerKey[$lastSrcNo] = $inline.Groups[1].Value }
+            continue
+        }
+        $key = [regex]::Match($s, $ANS_KEY)
+        if ($key.Success) {
+            $v = Get-LeadingNum $s
+            $target = if ($v -gt 0) { $v } else { $lastSrcNo }
+            if ($target -gt 0) { $answerKey[$target] = $key.Groups[1].Value }
+        }
+    }
+
     while ($i -lt $n) {
         $cur = $lines[$i]
         $curClean = Strip-HL $cur
         if ($curClean.Length -eq 0) { $i++; continue }
+
+        # answer-key lines were consumed in the first pass
+        if (Test-AnswerLine $curClean) { $i++; continue }
 
         # start of an intro/passage block ("■ نص (العنوان)") -> kept as descriptive text (no answer)
         if (Test-PassageStart $curClean) {
@@ -299,16 +419,62 @@ function Parse-DocText([string]$raw) {
         $numberedLine = Test-QuestionNumberLine $curClean
         if ((Test-SectionHeader $curClean) -or (Test-SectionHeader $cleanTitle)) { $i++; continue }
 
+        # ===== true/false question: stem carries the "(sah / khata)" marker =====
+        if ($curClean -cmatch $TF_MARKER) {
+            $qnum++
+            $tfTitle = Strip-SourceNumber (Strip-HL $cur)
+            $tfTitle = (([regex]::new($TF_MARKER)).Replace($tfTitle, ' ', 1)) -replace '\s*[:\uFF1A]\s*$', '' -replace '\s{2,}', ' '
+            $tfTitle = $tfTitle.Trim()
+            if ($tfTitle.Length -eq 0) { $tfTitle = $TF_TITLE_DEFAULT }
+            $correctTf = New-Object System.Collections.ArrayList
+            $j = $i + 1
+            while ($j -lt $n -and ($j -le ($i + 6))) {
+                $rawL = $lines[$j]
+                $c = (Strip-HL $rawL).Trim()
+                if ($c.Length -eq 0) { $j++; continue }
+                if (Test-TFWord $c) {
+                    $w = Get-NormalizeTF $c
+                    if ($rawL.Contains('[[HL]]')) { [void]$correctTf.Add($w) }
+                    $j++
+                    continue
+                }
+                if (Test-OptionLetterLine $c) {
+                    $k = $j + 1
+                    while ($k -lt $n -and ((Strip-HL $lines[$k]).Trim().Length -eq 0)) { $k++ }
+                    if ($k -lt $n -and (Test-TFWord ((Strip-HL $lines[$k]).Trim()))) {
+                        $w = Get-NormalizeTF ((Strip-HL $lines[$k]).Trim())
+                        if ($rawL.Contains('[[HL]]') -or $lines[$k].Contains('[[HL]]')) { [void]$correctTf.Add($w) }
+                        $j = $k + 1
+                        continue
+                    }
+                }
+                break
+            }
+            $tfCorrect = @()
+            if ($correctTf.Count -eq 1) { $tfCorrect = @($correctTf[0]) }
+            [void]$blocks.Add([pscustomobject]@{
+                kind     = 'truefalse'
+                title    = ($qnum.ToString() + '. ' + $tfTitle)
+                options  = @($TF_SAH, $TF_KHATA)
+                correct  = $tfCorrect
+                sourceNo = (Get-SourceNo $cur)
+            })
+            $i = $j
+            continue
+        }
+        # =====================================================================
+
         # ===== table-row question grouping (4 columns) — priority over generic pass =====
         $tq = Get-TableQuestion $lines $i $n
         if ($null -ne $tq) {
             $qnum++
             $tTitle = (Strip-SourceNumber (Strip-HL $lines[$tq.stemIndex])).Trim()
             [void]$blocks.Add([pscustomobject]@{
-                kind    = 'radio'
-                title   = ($qnum.ToString() + '. ' + $tTitle)
-                options = @($tq.options)
-                correct = @($tq.correct)
+                kind     = 'radio'
+                title    = ($qnum.ToString() + '. ' + $tTitle)
+                options  = @($tq.options)
+                correct  = @($tq.correct)
+                sourceNo = (Get-SourceNo $lines[$tq.stemIndex])
             })
             $i = $tq.end
             continue
@@ -324,10 +490,37 @@ function Parse-DocText([string]$raw) {
             $optRaw = $lines[$j]
             $optClean = Strip-HL $optRaw
             if ($optClean.Length -eq 0) { $j++; continue }
+            # answer-key line after options -- never swallowed as an option
+            if (Test-AnswerLine $optClean) { break }
             if ((Test-QuestionNumberLine $optClean) -or (Test-SectionHeader $optClean)) { break }
             if (Test-PassageStart $optClean) { break }
             if ($optClean.Length -gt 80) { break }
             if ($optClean -cmatch '[?\u061F]\s*$') { break }
+
+            # standalone true/false option ("sah" / "(khata)")
+            if (Test-TFWord $optClean) {
+                $w = Get-NormalizeTF $optClean
+                [void]$options.Add($w)
+                if ($optRaw.Contains('[[HL]]')) { [void]$correct.Add($w) }
+                $j++
+                $prefixedCount++
+                continue
+            }
+
+            # option letter on its own line followed by a true/false word
+            if (Test-OptionLetterLine $optClean) {
+                $k = $j + 1
+                while ($k -lt $n -and ((Strip-HL $lines[$k]).Trim().Length -eq 0)) { $k++ }
+                if ($k -lt $n -and (Test-TFWord ((Strip-HL $lines[$k]).Trim()))) {
+                    $w = Get-NormalizeTF ((Strip-HL $lines[$k]).Trim())
+                    [void]$options.Add($w)
+                    if ($optRaw.Contains('[[HL]]') -or $lines[$k].Contains('[[HL]]')) { [void]$correct.Add($w) }
+                    $j = $k + 1
+                    $prefixedCount++
+                    continue
+                }
+                break
+            }
 
             $prefixed = Test-OptionPrefix $optClean
             $hasColon = $optClean -cmatch '^[^:]{1,60}[:\uFF1A]\s*[^:]{1,60}$'
@@ -353,17 +546,41 @@ function Parse-DocText([string]$raw) {
                 $options.Insert(0, $split.option)
                 if ($split.highlighted) { $correct.Insert(0, $split.option) }
             }
+            # all options are true/false words -> a true/false question with unified options
+            $allTF = $true
+            $tfUnique = New-Object System.Collections.ArrayList
+            foreach ($o in $options) {
+                $w = Get-NormalizeTF $o
+                if (-not (Test-TFWord $w)) { $allTF = $false; break }
+                if (-not $tfUnique.Contains($w)) { [void]$tfUnique.Add($w) }
+            }
+            $isTF = ($allTF -and ($tfUnique.Count -ge 2))
+            $finalOptions = @($options.ToArray())
+            $finalCorrect = @($correct.ToArray())
+            if ($isTF) {
+                $finalOptions = @($tfUnique.ToArray())
+                $tfCorr = New-Object System.Collections.ArrayList
+                foreach ($c in $correct) {
+                    $w = Get-NormalizeTF $c
+                    if ((Test-TFWord $w) -and (-not $tfCorr.Contains($w))) { [void]$tfCorr.Add($w) }
+                }
+                $finalCorrect = @($tfCorr.ToArray())
+            }
             [void]$blocks.Add([pscustomobject]@{
-                kind    = 'radio'
-                title   = ($qnum.ToString() + '. ' + $title)
-                options = @($options.ToArray())
-                correct = @($correct.ToArray())
+                kind     = $(if ($isTF) { 'truefalse' } else { 'radio' })
+                title    = ($qnum.ToString() + '. ' + $title)
+                options  = $finalOptions
+                correct  = $finalCorrect
+                sourceNo = (Get-SourceNo $cur)
             })
             $i = $j
             continue
         }
 
-        if (Test-OptionPrefix $curClean) { $i++; continue }
+        # orphaned prefixed option line (no parent question) - skip
+        # (unless a long numbered "3- ..." line, which may be an essay question)
+        $longNumberedEssay = ($curClean -cmatch '^(?:[\u0660-\u0669]{1,3}|\d{1,3})[\-\)\u2013\uFF1D]\s*\S') -and ($curClean.Length -gt 60)
+        if ((Test-OptionPrefix $curClean) -and (-not $numberedLine) -and (-not $longNumberedEssay)) { $i++; continue }
 
         # unnumbered long prose (intro/reading text): kept as descriptive text block
         if ((-not $numberedLine) -and (-not (Test-AnswerBlank $cleanTitle))) {
@@ -380,12 +597,25 @@ function Parse-DocText([string]$raw) {
 
         $qnum++
         [void]$blocks.Add([pscustomobject]@{
-            kind    = 'short'
-            title   = ($qnum.ToString() + '. ' + $cleanTitle)
-            options = @()
-            correct = @()
+            kind     = 'short'
+            title    = ($qnum.ToString() + '. ' + $cleanTitle)
+            options  = @()
+            correct  = @()
+            sourceNo = (Get-SourceNo $cur)
         })
         $i++
+    }
+
+    # ---- apply the answer key (highlight wins; NEVER guess a missing answer) ----
+    if ($answerKey.Count -gt 0) {
+        foreach ($b in $blocks) {
+            if ($b.kind -ne 'radio' -and $b.kind -ne 'checkbox' -and $b.kind -ne 'truefalse') { continue }
+            if ($b.correct -and @($b.correct).Count -gt 0) { continue }
+            if ($null -eq $b.sourceNo) { continue }
+            if (-not $answerKey.ContainsKey([int]$b.sourceNo)) { continue }
+            $hit = Resolve-AnswerToken $answerKey[[int]$b.sourceNo] @($b.options)
+            if ($null -ne $hit) { $b.correct = @($hit) }
+        }
     }
     return @($blocks.ToArray())
 }
@@ -680,6 +910,48 @@ if ($passageDocx -and (Test-Path $passageDocx)) {
 }
 else {
     Write-Host '===== TEST 6 skipped (passage docx not present) ====='
+}
+
+# =================================================================== TEST 7
+# answer-key formats (inline + end-of-file list) + true/false detection + no guessing
+Write-Host '===== TEST 7 : answer key + true/false ====='
+$t7lines = New-Object System.Collections.ArrayList
+[void]$t7lines.Add((U 0x31,0x2D,0x20,0x645,0x627,0x20,0x647,0x64A,0x629,0x20,0x639,0x627,0x635,0x645,0x629,0x20,0x641,0x631,0x646,0x633,0x627,0x61F))
+[void]$t7lines.Add('A) ' + (U 0x644,0x646,0x62F,0x646))
+[void]$t7lines.Add('B) ' + (U 0x628,0x627,0x631,0x64A,0x633))
+[void]$t7lines.Add('C) ' + (U 0x628,0x631,0x644,0x64A,0x646))
+[void]$t7lines.Add('D) ' + (U 0x631,0x648,0x645,0x627))
+[void]$t7lines.Add((U 0x32,0x2D,0x20,0x627,0x644,0x625,0x633,0x644,0x627,0x645,0x20,0x62F,0x64A,0x646,0x20,0x627,0x644,0x62A,0x648,0x62D,0x64A,0x62F,0x20,0x28,0x635,0x62D,0x20,0x2F,0x20,0x62E,0x637,0x623,0x29))
+[void]$t7lines.Add($TF_SAH)
+[void]$t7lines.Add($TF_KHATA)
+[void]$t7lines.Add((U 0x627,0x644,0x625,0x62C,0x627,0x628,0x629,0x3A,0x20) + $TF_SAWAB)
+[void]$t7lines.Add((U 0x33,0x2E,0x20,0x645,0x627,0x20,0x623,0x643,0x628,0x631,0x20,0x643,0x648,0x627,0x643,0x628,0x20,0x627,0x644,0x645,0x62C,0x645,0x648,0x629,0x20,0x627,0x644,0x634,0x645,0x633,0x64A,0x629,0x61F))
+[void]$t7lines.Add((U 0x623,0x29,0x20,0x627,0x644,0x623,0x631,0x636))
+[void]$t7lines.Add((U 0x628,0x29,0x20,0x627,0x644,0x645,0x631,0x64A,0x62E))
+[void]$t7lines.Add((U 0x62C,0x29,0x20,0x627,0x644,0x645,0x634,0x62A,0x631,0x64A))
+[void]$t7lines.Add((U 0x62F,0x29,0x20,0x632,0x62D,0x644))
+[void]$t7lines.Add((U 0x627,0x644,0x625,0x62C,0x627,0x628,0x629,0x3A,0x20,0x62C))
+[void]$t7lines.Add((U 0x34,0x2E,0x20,0x627,0x643,0x62A,0x628,0x20,0x641,0x642,0x631,0x629,0x20,0x645,0x646,0x20,0x62B,0x644,0x627,0x62B,0x20,0x62C,0x645,0x644,0x20,0x62A,0x634,0x631,0x62D,0x20,0x641,0x64A,0x647,0x627,0x20,0x623,0x647,0x645,0x64A,0x629,0x20,0x627,0x644,0x639,0x644,0x645,0x20,0x641,0x64A,0x20,0x62D,0x64A,0x627,0x629,0x20,0x627,0x644,0x625,0x646,0x633,0x627,0x646))
+[void]$t7lines.Add('1- B')
+$b7 = Parse-DocText ($t7lines -join "`n")
+Show-Blocks 'answer-key doc' $b7
+
+Check 'T7: 4 blocks parsed' ($b7.Count -eq 4) ('got ' + $b7.Count)
+if ($b7.Count -ge 4) {
+    $paris = U 0x628,0x627,0x631,0x64A,0x633
+    $jupiter = U 0x627,0x644,0x645,0x634,0x62A,0x631,0x64A
+    Check 'T7: Q1 is radio with 4 options' (($b7[0].kind -eq 'radio') -and ($b7[0].options.Count -eq 4)) ($b7[0].kind + ' / ' + $b7[0].options.Count)
+    Check 'T7: Q1 got answer from end-of-file key list (B -> paris)' ((@($b7[0].correct).Count -eq 1) -and ($b7[0].correct[0] -eq $paris)) (@($b7[0].correct) -join ' | ')
+    Check 'T7: Q2 detected as true/false' ($b7[1].kind -eq 'truefalse') $b7[1].kind
+    Check 'T7: Q2 has unified [sah, khata] options' ((@($b7[1].options).Count -eq 2) -and ($b7[1].options[0] -ceq $TF_SAH) -and ($b7[1].options[1] -ceq $TF_KHATA)) ((@($b7[1].options)) -join ' | ')
+    Check 'T7: Q2 got inline answer (sawab -> sah)' ((@($b7[1].correct).Count -eq 1) -and ($b7[1].correct[0] -ceq $TF_SAH)) ((@($b7[1].correct)) -join ' | ')
+    Check 'T7: Q2 title has the TF marker removed' (-not ($b7[1].title -cmatch $TF_MARKER)) $b7[1].title
+    Check 'T7: Q3 got inline arabic-letter key (j -> 3rd option)' ((@($b7[2].correct).Count -eq 1) -and ($b7[2].correct[0] -eq $jupiter)) (@($b7[2].correct) -join ' | ')
+    Check 'T7: Q4 essay question kept (short, no options)' (($b7[3].kind -eq 'short') -and (@($b7[3].options).Count -eq 0)) ($b7[3].kind + ' / ' + $b7[3].title)
+    Check 'T7: Q4 has NO guessed answer (no key in file)' (@($b7[3].correct).Count -eq 0) (@($b7[3].correct) -join ' | ')
+    $noLeak7 = $true
+    foreach ($b in $b7) { if (Test-AnswerLine $b.title) { $noLeak7 = $false } }
+    Check 'T7: no answer-key line leaked into a title' $noLeak7 ''
 }
 
 Write-Host ''

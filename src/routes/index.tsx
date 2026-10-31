@@ -135,7 +135,7 @@ function HomePage() {
         ...(hasCorrect && !active.isQuiz ? { isQuiz: true } : {}),
       });
       toast.success(
-        `تمت إضافة ${qsCount} سؤالاً${textNote} إلى "${active.title}"${correctNote}`,
+        `تم استيراد ${qsCount} سؤالاً${textNote} إلى "${active.title}" بنجاح${correctNote}`,
         { duration: 8000 },
       );
     } else {
@@ -147,7 +147,7 @@ function HomePage() {
         questions,
         updatedAt: Date.now(),
       });
-      toast.success(`تم إنشاء نموذج من ${qsCount} سؤالاً${textNote}${correctNote}`, {
+      toast.success(`تم استيراد ${qsCount} سؤالاً${textNote} بنجاح${correctNote}`, {
         duration: 8000,
       });
     }

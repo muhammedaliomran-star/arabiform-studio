@@ -4,7 +4,7 @@ import { newQuestion, uid } from "@/lib/form-types";
 /** نتيجة تحليل كتلة نصية واحدة قبل العرض في شاشة المعاينة */
 export type ParsedBlock = {
   /** نوع السؤال المقترح (يعدلها المستخدم في المعاينة) */
-  kind: "radio" | "checkbox" | "short" | "paragraph" | "text";
+  kind: "radio" | "checkbox" | "short" | "paragraph" | "text" | "truefalse";
   /** نص السؤال (يعدل) */
   title: string;
   /** الخيرات المقترحة (يعدل/يحذف/يزيد) */
@@ -15,6 +15,10 @@ export type ParsedBlock = {
   text?: string;
   /** هل السؤال مطلوب */
   required: boolean;
+  /** درجة السؤال في الاختبار (يعدّلها المستخدم في شاشة المراجعة) */
+  points?: number;
+  /** رقم السؤال في ملف المصدر — يُستخدم لربط مفتاح الإجابة بالسؤال */
+  sourceNo?: number;
 };
 
 /** إزالة التشكيل والمسافات الزائدة والطول الزائد (tatweel) */
@@ -100,6 +104,10 @@ export function parseDocText(raw: string): ParsedBlock[] {
     t = t.replace(/^[\u0660-\u0669]{1,3}[\.\uFF1E\u066B\u06D4]\s*/, "");
     // Regular digits + dot: "1. "
     t = t.replace(/^\d{1,3}[\.\uFF1E]\s*/, "");
+    // Regular digits + dash/paren: "1- " "1) " (ترقيم شائع في ملفات الامتحانات)
+    t = t.replace(/^\d{1,3}[\-\)\u2013\uFF1D]\s*/, "");
+    // Arabic-Indic digits + dash/paren: "١- " "١) "
+    t = t.replace(/^[\u0660-\u0669]{1,3}[\-\)\u2013\uFF1D]\s*/, "");
     // Arabic-Indic digits + space: "1 " (question numbering like "2 text")
     t = t.replace(/^[\u0660-\u0669]{1,3}\s+/, "");
     // Regular digits + space: "1 "
@@ -117,6 +125,13 @@ export function parseDocText(raw: string): ParsedBlock[] {
     if (/^\d{1,3}[\.\uFF1E]/.test(s)) return true;
     // digit + space + Arabic letter: "2 murder" (question numbering, NOT option which is digit+tight)
     if (/^(?:[\u0660-\u0669]{1,3}|\d{1,3})\s+[\u0621-\u064A]/.test(s)) return true;
+    // "1- ما هو ...؟" / "3) من هو ...؟" / "2- ... (صح / خطأ)" — رقم + فاصل + نص
+    // ينتهي باستفهام أو يحمل علامة صح/خطأ (الخيارات لا تنتهي بعلامة استفهام).
+    if (
+      /^(?:[\u0660-\u0669]{1,3}|\d{1,3})[\-\)\u2013\uFF1D]\s*\S/.test(s) &&
+      (/[\u061F?]\s*$/.test(s) || TF_MARKER_RE.test(s))
+    )
+      return true;
     return false;
   };
 
@@ -176,6 +191,113 @@ export function parseDocText(raw: string): ParsedBlock[] {
     new RegExp("^" + AR_OPTION_LETTER + "\\s+(?=\\S)").test(s) ||
     /^(?:[\u0621-\u064A]{1,2}|[A-Za-z]{1,2})[\)\uFF1A:]\s*\S/.test(s) ||
     /^[A-Da-d]\s+(?=\S)/.test(s);
+
+  /*==============================================================================
+    مفتاح الإجابة — صيغ شائعة في ملفات وورد:
+      "الإجابة: ب" / "الإجابة الصحيحة: ج" / "Answer: B"
+      أو قائمة في نهاية الملف: "1- ب" / "2. C"
+    نقرأها في مسحة أولى ونربطها بالسؤال برقم السؤال في المصدر.
+    قاعدة صارمة: إن لم يُوجد مفتاح للسؤال لا نُخمّن — يبقى بدون إجابة صحيحة.
+  ==============================================================================*/
+  /** "الإجابة: ب" / "الإجابة الصحيحة: صح" / "الجابة: ج" (بهمزتها أو بدونها) */
+  const ANSWER_INLINE_RE =
+    /^(?:الإجابة|الاجابة|الجابة)(?:\s*الصحيحة)?(?:\s*هي)?\s*[:：]\s*(?:الخيار\s+)?(صح|صواب|خطأ|[A-Za-z]|[أ-ي])\.?\s*$/i;
+  /** "Answer: B" / "Correct answer: C" */
+  const ANSWER_EN_RE =
+    /^(?:answer|correct(?:\s*answer)?|the\s*answer)\s*(?:is)?\s*[:：]\s*(?:option\s*)?(صح|صواب|خطأ|[A-Za-z])\.?\s*$/i;
+  /** قائمة مفتاح الإجابة: "1- ب" / "2. C" / "12: صح" */
+  const ANSWER_KEY_RE =
+    /^(?:[\u0660-\u0669]{1,3}|\d{1,3})\s*[\-\.\)\uFF1D\uFF1A:]\s*(?:إجابة\s*)?(صح|صواب|خطأ|[A-Za-z]|[أ-ي])\.?\s*$/i;
+
+  /** هل السطر صيغة إجابة؟ يُقرأ في المسحة الأولى ثم يُتخطّى في المعالجة */
+  const isAnswerLine = (s: string): boolean =>
+    ANSWER_INLINE_RE.test(s) || ANSWER_EN_RE.test(s) || ANSWER_KEY_RE.test(s);
+
+  /** تحويل رقم عربي-هندي/غربي إلى قيمة عددية */
+  const toWesternNum = (s: string): number =>
+    Number(s.replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660)));
+
+  /** الرقم على بداية السطر (مع تجاهل بادئة نوع "V.1" و"أ.3") */
+  const extractLeadingNum = (s: string): number => {
+    const m = s.match(/^(?:[A-Za-z]{1,4}[\.\-])?([\u0660-\u0669]{1,3}|\d{1,3})/);
+    return m ? toWesternNum(m[1]) : 0;
+  };
+
+  /** ترتيب حروف الخيارات الشائع في الامتحانات: أ ب ج د هـ و ز ح ط ي ك ل م ن س ع ف ص ق ر ش ت ث خ ذ ض ظ غ */
+  const OPTION_LETTERS = "أبجدهوزحطيكلمنس عفصقرشتثخذضظغ".replace(/\s/g, "");
+
+  /** تحويل حرف خيار (عربي/إنجليزي) إلى فهرس الخيار — undefined عند التعذّر */
+  const letterToIndex = (raw: string): number | undefined => {
+    const t = raw.trim();
+    if (/^[A-Za-z]$/.test(t)) {
+      const idx = "ABCDEFGHIJ".indexOf(t.toUpperCase());
+      return idx >= 0 ? idx : undefined;
+    }
+    const n = t.replace(/[\u064B-\u0652\u0640\u0670]/g, "");
+    const c = /^[\u0623\u0625\u0622\u0627]$/.test(n) ? "\u0623" : n;
+    const idx = OPTION_LETTERS.indexOf(c);
+    return idx >= 0 ? idx : undefined;
+  };
+
+  /** كلمات نوع صح/خطأ */
+  const TF_WORDS_SET = new Set(["صح", "خطأ"]);
+  /** توحيد "صواب" إلى "صح" وإزالة الأقوال */
+  const normalizeTFWord = (s: string): string => {
+    const t = s.replace(/[（()\uFF09\s]/g, "");
+    return t === "صواب" ? "صح" : t;
+  };
+  /** سطر خيار صح/خطأ منفصل: "صح" أو "(خطأ)" */
+  const TF_WORD_RE = /^[（(]?\s*(?:صح|صواب|خطأ)\s*[)）]?$/;
+  /** علامة النوع داخل نص السؤال: "(صح / خطأ)" / "صواب أم خطأ" / "صح-خطأ" */
+  const TF_MARKER_RE =
+    /[（(]?\s*(?:صح|صواب)\s*(?:\/|–|—|-|،|,|و|أم|أو)\s*خطأ\s*[)）]?/;
+
+  // مسحة أولى: بناء مفتاح الإجابة من سطور الإجابة وقوائم النهاية
+  const answerKey = new Map<number, string>();
+  let lastSrcNo = 0;
+  for (const rawLine of lines) {
+    const s = stripHL(rawLine).trim();
+    if (!s) continue;
+    if (isQuestionNumberLine(s)) {
+      const v = extractLeadingNum(s);
+      if (v > 0) lastSrcNo = v;
+    }
+    const inline = ANSWER_INLINE_RE.exec(s) ?? ANSWER_EN_RE.exec(s);
+    if (inline) {
+      if (lastSrcNo > 0) answerKey.set(lastSrcNo, inline[1]);
+      continue;
+    }
+    const key = ANSWER_KEY_RE.exec(s);
+    if (key) {
+      const v = extractLeadingNum(s);
+      const target = v > 0 ? v : lastSrcNo;
+      if (target > 0) answerKey.set(target, key[1]);
+    }
+  }
+
+  /** رقم السؤال في المصدر كما ورد في الملف (يرتبط بمفتاح الإجابة) */
+  const extractSourceNo = (s: string): number | undefined => {
+    const v = extractLeadingNum(stripHL(s).trim());
+    return v > 0 ? v : undefined;
+  };
+
+  /**
+   * تحويل رمز المفتاح ("ب" / "صح") إلى خيار فعلي.
+   * يعيد undefined بدل التخمين عندما لا يطابق الرمز خيارات السؤال.
+   */
+  const resolveAnswerToken = (
+    token: string,
+    options: string[],
+  ): string | undefined => {
+    const t = token.trim();
+    if (t === "صح" || t === "صواب" || t === "خطأ") {
+      const w = normalizeTFWord(t);
+      return options.find((o) => normalizeTFWord(o.trim()) === w);
+    }
+    const idx = letterToIndex(t);
+    if (idx === undefined || idx >= options.length) return undefined;
+    return options[idx];
+  };
 
   let i = 0;
   let questionNumber = 0;
@@ -306,6 +428,9 @@ export function parseDocText(raw: string): ParsedBlock[] {
     const curClean = stripHL(cur);
     if (!curClean) { i++; continue; }
 
+    // سطور مفتاح الإجابة ("الإجابة: ب" / "1- ج") — تُقرأ في المسحة الأولى وتُتخطّى هنا
+    if (isAnswerLine(curClean)) { i++; continue; }
+
     // بداية كتلة نص تمهيدي (مقروءات): "■ نص (الأرض والقمر)" — تُحفظ كنص وصفي بدون إجابة
     if (PASSAGE_MARK_RE.test(curClean) || PASSAGE_TITLE_RE.test(curClean)) {
       const passageTitle = curClean
@@ -347,6 +472,53 @@ export function parseDocText(raw: string): ParsedBlock[] {
     // section header lines are never questions
     if (isSectionHeader(curClean) || isSectionHeader(cleanTitle)) { i++; continue; }
 
+    // ===== سؤال صح / خطأ: نص السؤال يحمل العلامة "(صح / خطأ)" أو "صواب أم خطأ" =====
+    if (TF_MARKER_RE.test(curClean)) {
+      questionNumber++;
+      let tfTitle = stripSourceNumber(stripHL(cur))
+        .replace(TF_MARKER_RE, " ")
+        .replace(/\s*[:：]\s*$/, "")
+        .replace(/\s{2,}/g, " ")
+        .trim();
+      if (!tfTitle) tfTitle = "صح أم خطأ";
+      const correctTf: string[] = [];
+      let j = i + 1;
+      // خيارات "صح"/"خطأ" على أسطر منفصلة (مع تظليل محتمل) أو خلف حرف خيار منفصل
+      while (j < n && j <= i + 6) {
+        const rawL = lines[j];
+        const c = stripHL(rawL).trim();
+        if (!c) { j++; continue; }
+        if (TF_WORD_RE.test(c)) {
+          const w = normalizeTFWord(c);
+          if (hasHL(rawL)) correctTf.push(w);
+          j++;
+          continue;
+        }
+        if (isOptionLetterLine(c)) {
+          let k = j + 1;
+          while (k < n && !stripHL(lines[k]).trim()) k++;
+          if (k < n && TF_WORD_RE.test(stripHL(lines[k]).trim())) {
+            const w = normalizeTFWord(stripHL(lines[k]).trim());
+            if (hasHL(rawL) || hasHL(lines[k])) correctTf.push(w);
+            j = k + 1;
+            continue;
+          }
+        }
+        break;
+      }
+      blocks.push({
+        kind: "truefalse",
+        title: questionNumber + ". " + tfTitle,
+        options: ["صح", "خطأ"],
+        correct: correctTf.length === 1 ? [correctTf[0]] : undefined,
+        required: true,
+        sourceNo: extractSourceNo(cur),
+      });
+      i = j;
+      continue;
+    }
+    // =====================================================================
+
     // ===== تجميع صف جدول سؤال (4 أعمدة) — أولوية على المعالجة العامة =====
     const tableQ = tryParseTableQuestion(i);
     if (tableQ) {
@@ -357,6 +529,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
         options: tableQ.options,
         correct: tableQ.correct.length > 0 ? tableQ.correct : undefined,
         required: true,
+        sourceNo: extractSourceNo(lines[i]),
       });
       i = tableQ.end;
       continue;
@@ -374,12 +547,40 @@ export function parseDocText(raw: string): ParsedBlock[] {
       const optClean = stripHL(optRaw);
       if (!optClean) { j++; continue; }
 
+      // سطر مفتاح إجابة بعد الخيارات — لا يُبتلع كخيار
+      if (isAnswerLine(optClean)) break;
+
       // stop at next question (digit+dot, digit+space, section header)
       if (isQuestionNumberLine(optClean) || isSectionHeader(optClean)) break;
       // stop at the start of an intro/passage block
       if (PASSAGE_MARK_RE.test(optClean) || PASSAGE_TITLE_RE.test(optClean)) break;
       if (optClean.length > 80) break;
       if (/[?\u061F]\s*$/.test(optClean)) break;
+
+      // خيار صح/خطأ منفصل بدون بادئة حرف ("صح" / "(خطأ)")
+      if (TF_WORD_RE.test(optClean)) {
+        const w = normalizeTFWord(optClean);
+        options.push(w);
+        if (hasHL(optRaw)) correctAnswer.push(w);
+        j++;
+        prefixedCount++;
+        continue;
+      }
+
+      // حرف خيار منفصل يليه نص "صح"/"خطأ" (تنسيق جدول لسؤال صح-خطأ)
+      if (isOptionLetterLine(optClean)) {
+        let k = j + 1;
+        while (k < n && !stripHL(lines[k]).trim()) k++;
+        if (k < n && TF_WORD_RE.test(stripHL(lines[k]).trim())) {
+          const w = normalizeTFWord(stripHL(lines[k]).trim());
+          options.push(w);
+          if (hasHL(optRaw) || hasHL(lines[k])) correctAnswer.push(w);
+          j = k + 1;
+          prefixedCount++;
+          continue;
+        }
+        break;
+      }
 
       const prefixed = hasOptionPrefix(optClean);
       const hasColon = /^[^:]{1,60}[:\uFF1A]\s*[^:]{1,60}$/.test(optClean);
@@ -409,19 +610,35 @@ export function parseDocText(raw: string): ParsedBlock[] {
         options.unshift(split.option);
         if (split.highlighted) correctAnswer.unshift(split.option);
       }
+      // كل الخيارات من كلمات صح/خطأ → نوع "صح وخطأ" بخيارات موحّدة ["صح", "خطأ"]
+      const tfUnique = [...new Set(options.map(normalizeTFWord))].filter((w) =>
+        TF_WORDS_SET.has(w),
+      );
+      const isTF = options.every((o) => TF_WORDS_SET.has(normalizeTFWord(o))) && tfUnique.length >= 2;
+      const finalOptions = isTF ? tfUnique : options;
+      const finalCorrect = isTF
+        ? [...new Set(correctAnswer.map(normalizeTFWord))].filter((w) =>
+            TF_WORDS_SET.has(w),
+          )
+        : correctAnswer;
       blocks.push({
-        kind: "radio",
+        kind: isTF ? "truefalse" : "radio",
         title: questionNumber + ". " + title,
-        options: options,
-        correct: correctAnswer.length > 0 ? correctAnswer : undefined,
+        options: finalOptions,
+        correct: finalCorrect.length > 0 ? finalCorrect : undefined,
         required: true,
+        sourceNo: extractSourceNo(cur),
       });
       i = j;
       continue;
     }
 
     // orphaned prefixed option line (no parent question) - skip
-    if (hasOptionPrefix(curClean)) { i++; continue; }
+    // (ما لم يكن سطراً مرقّماً بصيغة "3- ..." الطويل — فقد يكون سؤالاً مقاليّاً لا خياراً يتيمّاً)
+    const longNumberedEssay =
+      /^(?:[\u0660-\u0669]{1,3}|\d{1,3})[\-\)\u2013\uFF1D]\s*\S/.test(curClean) &&
+      curClean.length > 60;
+    if (hasOptionPrefix(curClean) && !numberedLine && !longNumberedEssay) { i++; continue; }
 
     // فقرة نثر تمهيدية (مقروءات/شرح) — ليست سؤالاً: تُحفظ كنص وصفي بدون إجابة
     if (!numberedLine && !hasAnswerBlank(cleanTitle)) {
@@ -448,8 +665,26 @@ export function parseDocText(raw: string): ParsedBlock[] {
       title: questionNumber + ". " + cleanTitle,
       options: [],
       required: true,
+      sourceNo: extractSourceNo(cur),
     });
     i++;
+  }
+
+  /*==============================================================================
+    ربط مفتاح الإجابة بالأسئلة (إن وُجد في الملف).
+    التظليل الأصفر في الملف له الأولوية، ولا تخمين أبداً:
+    إن لم يُطابق رمز المفتاح خيارات السؤال يبقى السؤال بدون إجابة صحيحة.
+  ==============================================================================*/
+  if (answerKey.size > 0) {
+    for (const b of blocks) {
+      if (b.kind !== "radio" && b.kind !== "checkbox" && b.kind !== "truefalse") continue;
+      if (b.correct && b.correct.length > 0) continue;
+      if (!b.sourceNo) continue;
+      const token = answerKey.get(b.sourceNo);
+      if (!token) continue;
+      const hit = resolveAnswerToken(token, b.options);
+      if (hit) b.correct = [hit];
+    }
   }
 
   return blocks;
@@ -473,7 +708,7 @@ export function blocksToQuestions(
 ): Question[] {
   return blocks.map((b, idx) => {
     const q = newQuestion(
-      b.kind === "radio"
+      b.kind === "radio" || b.kind === "truefalse"
         ? "radio"
         : b.kind === "checkbox"
           ? "checkbox"
@@ -490,6 +725,10 @@ export function blocksToQuestions(
     q.required = b.required;
     q.options = b.options.filter((o) => o.length > 0);
     q.correct = b.correct ?? [];
+    // درجة السؤال في الاختبار (النصوص الوصفية بلا درجة)
+    if (b.kind !== "text") {
+      q.points = typeof b.points === "number" && b.points >= 0 ? b.points : 1;
+    }
     return q;
   });
 }
