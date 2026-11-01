@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import type { Question } from "@/lib/form-types";
+import { uid } from "@/lib/form-types";
 import {
   parseDocText,
   blocksToQuestions,
@@ -48,6 +49,34 @@ type DocImportDialogProps = {
 
 /** مراحل تدفق الاستيراد: اختيار الملف ← التحليل ← المراجعة */
 type Stage = "select" | "analyzing" | "review";
+
+/** قسم (مجموعة أسئلة) داخل اختبار متعدد الأقسام -- كما في نماذج Google */
+type Section = {
+  id: string;
+  title: string;
+  blocks: ParsedBlock[];
+};
+
+/** استنتاج أقسام من كتل مسطحة: كتلة نص (text) قصيرة تُعتبر عنوان قسم، والأسئلة التي تليها تنتمي له */
+function deriveSections(blocks: ParsedBlock[]): Section[] {
+  const sections: Section[] = [];
+  let current: Section | null = null;
+  for (const b of blocks) {
+    if (b.kind === "text" && b.title.trim()) {
+      if (current) sections.push(current);
+      current = { id: "s" + sections.length, title: b.title.trim(), blocks: [b] };
+    } else if (current) {
+      current.blocks.push(b);
+    } else {
+      current = { id: "s" + sections.length, title: "القسم 1", blocks: [b] };
+    }
+  }
+  if (current) sections.push(current);
+  if (sections.length === 0 && blocks.length > 0) {
+    sections.push({ id: "s0", title: "القسم 1", blocks });
+  }
+  return sections;
+}
 
 /** توحيد كلمات صح/خطأ وإزالة الأقوال */
 function normTF(s: string): string {
@@ -159,6 +188,7 @@ export function DocImportDialog({
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [blocks, setBlocks] = useState<ParsedBlock[]>([]);
+  const sections = useMemo(() => deriveSections(blocks), [blocks]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [rawText, setRawText] = useState("");
   const [showRaw, setShowRaw] = useState(false);
@@ -196,6 +226,7 @@ export function DocImportDialog({
     setProgressStage("reading");
     setQuestionsFound(0);
     setParsedPreview("");
+
   }, [open]);
 
   /*============================ التحليل ============================*/
@@ -205,6 +236,7 @@ export function DocImportDialog({
     setProgressStage("reading");
     setQuestionsFound(0);
     setParsedPreview("");
+
     setAnalyzingMsg(
       isFile
         ? "الجاري: قراءة ملف Word واستخراج النص…"
@@ -512,6 +544,7 @@ export function DocImportDialog({
   const backToSelect = () => {
     setStage("select");
     setBlocks([]);
+
     setSelected(new Set());
     setShowRaw(false);
     setError(null);
@@ -809,6 +842,8 @@ export function DocImportDialog({
                 <ArrowDown className="h-3.5 w-3.5" aria-hidden /> (لأسفل)
               </button>
             </div>
+                </div>
+              ))}
 
             {/* معاينة النص المستخرج */}
             {rawText && (
@@ -893,7 +928,27 @@ export function DocImportDialog({
 
             {/* قائمة الأسئلة */}
             <div className="space-y-3">
-              {blocks.map((b, idx) => {
+              {sections.map((section, sIdx) => (
+              <div key={section.id} className="rounded-xl border-2 border-primary/30 bg-surface/20 p-3">
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="rounded bg-primary/15 px-2 py-0.5 text-[11px] font-bold text-primary">
+                    قسم {sIdx + 1}
+                  </span>
+                  <input
+                    value={section.title}
+                    onChange={(e) => {
+                      const firstIdx = sections
+                        .slice(0, sIdx)
+                        .reduce((a, s) => a + s.blocks.length, 0);
+                      patchBlock(firstIdx, { title: e.target.value });
+                    }}
+                    className="grow rounded border border-input bg-background px-2 py-1 text-sm font-bold outline-none focus:border-ring"
+                    placeholder="عنوان القسم"
+                  />
+                </div>
+                {section.blocks.map((b, bIdx) => {
+                  const idx = sections.slice(0, sIdx).reduce((a, s) => a + s.blocks.length, 0) + bIdx;
+
                 const reason = reviewReason(b);
                 const isSel = selected.has(idx);
                 const answerable =
@@ -1095,6 +1150,8 @@ export function DocImportDialog({
                   </div>
                 );
               })}
+                </div>
+              ))}
             </div>
 
             {blocks.length === 0 && (
