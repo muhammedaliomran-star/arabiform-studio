@@ -842,8 +842,7 @@ export function DocImportDialog({
                 <ArrowDown className="h-3.5 w-3.5" aria-hidden /> (لأسفل)
               </button>
             </div>
-                </div>
-              ))}
+
 
             {/* معاينة النص المستخرج */}
             {rawText && (
