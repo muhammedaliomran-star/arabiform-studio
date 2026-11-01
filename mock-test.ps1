@@ -23,7 +23,7 @@ $TF_TITLE_DEFAULT = U 0x0635, 0x062D, 0x20, 0x0623, 0x0645, 0x20, 0x062E, 0x0637
 $ANS_INLINE = '^(?:\u0627\u0644\u0625\u062C\u0627\u0628\u0629|\u0627\u0644\u0627\u062C\u0627\u0628\u0629|\u0627\u0644\u062C\u0627\u0628\u0629)(?:\s*\u0627\u0644\u0635\u062D\u064A\u062D\u0629)?(?:\s*\u0647\u064A)?\s*[:\uFF1A]\s*(?:\u0627\u0644\u062E\u064A\u0627\u0631\s+)?(' + $TF_ALT + '|[A-Za-z]|[\u0623-\u064A])\.?\s*$'
 $ANS_EN = '^(?:answer|correct(?:\s*answer)?|the\s*answer)\s*(?:is)?\s*[:\uFF1A]\s*(?:option\s*)?(' + $TF_ALT + '|[A-Za-z])\.?\s*$'
 $ANS_KEY = '^(?:[\u0660-\u0669]{1,3}|\d{1,3})\s*[\-\.\)\u2013\uFF1D\uFF1A:]\s*(?:\u0625\u062C\u0627\u0628\u0629\s*)?(' + $TF_ALT + '|[A-Za-z]|[\u0623-\u064A])\.?\s*$'
-$OPT_LETTER_LINE = '^[\[\u0660-\u0669]*\s*(?:\[\[HL\]\]\s*)?([\u0623\u0625\u0622\u0627\u0647\u0640\u062F\u062C\u0632\u062D\u0637\u064A\u0643\u0644\u0645\u0646\u0633\u0639\u0641\u0635\u0642\u0631\u0634\u062A\u062B\u062E\u0630\u0636\u0638\u063A]|[A-Da-d])(?:\s*[\)\.\uFF1A:])?(?:\s*\[\[/HL\]\])?$'
+$OPT_LETTER_LINE = '^[\[\u0660-\u0669]*\s*(?:\[\[HL\]\]\s*)?([\u0623\u0625\u0622\u0627\u0628\u0647\u0640\u062F\u062C\u0632\u062D\u0637\u064A\u0643\u0644\u0645\u0646\u0633\u0639\u0641\u0635\u0642\u0631\u0634\u062A\u062B\u062E\u0630\u0636\u0638\u063A]|[A-Da-d])(?:\s*[\)\.\-–—\uFF1A:؟]])?(?:\s*\[\[/HL\]\])?$'
 $OPT_LETTERS = U 0x0623, 0x0628, 0x062C, 0x062F, 0x0647, 0x0648, 0x0632, 0x062D, 0x0637, 0x064A, 0x0643, 0x0644, 0x0645, 0x0646, 0x0633, 0x0639, 0x0641, 0x0635, 0x0642, 0x0631, 0x0634, 0x062A, 0x062B, 0x062E, 0x0630, 0x0636, 0x0638, 0x063A
 
 # passage/intro block markers (mirrors PASSAGE_MARK_RE / PASSAGE_TITLE_RE in doc-parser.ts)
@@ -56,6 +56,9 @@ function Test-YellowShading([string]$frag) {
 function Get-XmlLines([string]$xml) {
     $out = New-Object System.Collections.ArrayList
     $stack = New-Object System.Collections.Stack
+    # mc:Fallback is a duplicate copy of mc:Choice (old-Word compatibility);
+    # removing it prevents duplicated letters/text that break option grouping.
+    $xml = [regex]::Replace($xml, '<mc:Fallback\b[^>]*>[\s\S]*?</mc:Fallback>', '')
     # نجمع التوكنات أولاً حتى تكون حدود كل فقرة معلومة (الفقرات ذاتية الإغلاق
     # <w:p .../> لا تحوي </w:p> ولا يجوز أن يمتد البحث خلفها إلى فقرة تالية).
     $tokens = [regex]::Matches($xml, '<w:tc[\s>]|</w:tc[\s>]|<w:p[\s>]')
@@ -81,11 +84,36 @@ function Get-XmlLines([string]$xml) {
         foreach ($m in [regex]::Matches($content, '<w:r[\s>]([\s\S]*?)</w:r>')) {
             $run = $m.Groups[1].Value
             $hl = ($run -cmatch '<w:highlight[^>]*w:val="yellow"') -or (Test-YellowShading $run)
-            $tm = [regex]::Match($run, '<w:t[^>]*>([^<]*)</w:t>')
-            if (-not $tm.Success) { continue }
-            $text = $tm.Groups[1].Value
+            # full run text: every <w:t> in order, <w:tab/> as space, <w:br/> as line break
+            $runSb = New-Object System.Text.StringBuilder
+            foreach ($rt in [regex]::Matches($run, '<w:t(?:\s[^>]*)?>[\s\S]*?</w:t>|<w:tab\b[^>]*\s*/>|<w:br\b[^>]*\s*/>|<w:cr\b[^>]*\s*/>')) {
+                $tv = $rt.Value
+                if ($tv.StartsWith('<w:t')) {
+                    $inner = [regex]::Match($tv, '^<w:t(?:\s[^>]*)?>([\s\S]*)</w:t>$')
+                    if ($inner.Success) { [void]$runSb.Append($inner.Groups[1].Value) }
+                } elseif ($tv.StartsWith('<w:tab')) {
+                    [void]$runSb.Append(' ')
+                } else {
+                    [void]$runSb.Append([string][char]10)
+                }
+            }
+            $text = $runSb.ToString()
             if ($text.Length -eq 0) { continue }
-            if ($hl) { [void]$parts.Add('[[HL]]' + $text + '[[/HL]]') } else { [void]$parts.Add($text) }
+            # نص الرنز يُحفظ حرفياً (بما فيه المسافات بين الرنز)؛ فاصل الأسطر
+            # <w:br/> فقط يبدأ مقطعاً جديداً بتظليله المستقل.
+            if ($hl) {
+                $piece = New-Object System.Text.StringBuilder
+                $firstSeg = $true
+                foreach ($seg in ($text -split [char]10)) {
+                    if (-not $firstSeg) { [void]$piece.Append([string][char]10) }
+                    $firstSeg = $false
+                    [void]$piece.Append('[[HL]]' + $seg + '[[/HL]]')
+                }
+                [void]$parts.Add($piece.ToString())
+            }
+            else {
+                [void]$parts.Add($text)
+            }
         }
         $pPrIdx = $content.IndexOf('<w:pPr')
         $pPrEnd = $content.IndexOf('</w:pPr>')
@@ -97,8 +125,13 @@ function Get-XmlLines([string]$xml) {
         $cellHL = $false
         foreach ($v in $stack) { if ($v) { $cellHL = $true; break } }
         $line = (($parts -join '').Trim())
-        if (($paraShaded -or $cellHL) -and $line.Length -gt 0) { $line = '[[HL]]' + $line + '[[/HL]]' }
-        [void]$out.Add($line)
+        if ($line.Length -eq 0) { continue }
+        foreach ($seg in ($line -split [char]10)) {
+            $s2 = $seg.Trim()
+            if ($s2.Length -eq 0) { continue }
+            if ($paraShaded -or $cellHL) { [void]$out.Add('[[HL]]' + $s2 + '[[/HL]]') }
+            else { [void]$out.Add($s2) }
+        }
     }
     return $out
 }
@@ -218,9 +251,9 @@ function Get-OptionText([string]$s) {
     $t = $t -creplace '^\d{1,2}[\-\.\)\uFF1D\uFF1A:]\s*', ''
     $t = $t -creplace '^\d{1,2}\s+', ''
     $t = $t -creplace '^\d{1,2}(?=[\u0621-\u064A])', ''
-    $t = $t -creplace '^[\u0621-\u064A][\)\.\uFF1A:]\s*', ''
+    $t = $t -creplace '^[\u0621-\u064A][\)\.\-–—\uFF1A:؟]\s*', ''
     $t = $t -creplace ('^' + $AR + '\s+'), ''
-    $t = $t -creplace '^[A-Za-z]{1,2}[\)\.\uFF1A:]\s*', ''
+    $t = $t -creplace '^[A-Za-z]{1,2}[\)\.\-–—\uFF1A:]\s*', ''
     $t = $t -creplace '^[A-Da-d]\s+', ''
     return $t.Trim()
 }
@@ -229,21 +262,23 @@ function Test-OptionText([string]$s) {
     # mirrors isOptionTextLine in doc-parser.ts
     $t = (Strip-HL $s).Trim()
     if ($t.Length -eq 0 -or $t.Length -gt 80) { return $false }
-    $letterRe = '^\[?[A-Da-d]{1}\s*[\)\.\uFF1A:]?\s*\]?$'
-    if ($t -cmatch $letterRe) { return $false }
+    if (Test-OptionLetterLine $t) { return $false }
     if ($t -cmatch '[?\u061F]\s*$') { return $false }
     $colonRe = '^[^:：]{1,60}[:：]\s*[^:：]{1,60}$'
     if ($t -cmatch $colonRe) { return $true }
     # short word/phrase without a question mark (fill-in-the-blank options)
-    return ($t.Length -le 40)
+    if ($t.Length -gt 40) { return $false }
+    if (Test-QuestionNumberLine $t) { return $false }
+    if (Test-SectionHeader $t) { return $false }
+    return $true
 }
 
 function Test-OptionPrefix([string]$s) {
     if ($s -cmatch '^(?:[\u0660-\u0669]{1,2}|\d{1,2})[\-\.\)\uFF1D\uFF1A:]\s*\S') { return $true }
     if ($s -cmatch '^(?:[\u0660-\u0669]{1,2}|\d{1,2})(?=[\u0621-\u064A])') { return $true }
-    if ($s -cmatch '^[\u0621-\u064A][\)\.\uFF1A:]\s*\S') { return $true }
+    if ($s -cmatch '^[\u0621-\u064A][\)\.\-–—\uFF1A:؟]\s*\S') { return $true }
     if ($s -cmatch ('^' + $AR + '\s+(?=\S)')) { return $true }
-    if ($s -cmatch '^(?:[\u0621-\u064A]{1,2}|[A-Za-z]{1,2})[\)\uFF1A:]\s*\S') { return $true }
+    if ($s -cmatch '^(?:[\u0621-\u064A]{1,2}|[A-Za-z]{1,2})[\)\.\-–—\uFF1A:]\s*\S') { return $true }
     if ($s -cmatch '^[A-Da-d]\s+(?=\S)') { return $true }
     return $false
 }
@@ -273,52 +308,116 @@ function Test-PassageBody([string]$s) {
     return $true
 }
 
+# mirrors INLINE_MARKER_RE in doc-parser.ts: option markers (letter + dot/paren/colon)
+# inside one line; digit numbering ("1.") is NOT an option marker.
+$INLINE_MARKER = '(?:^|[\s\u00A0\t])(?:\[\[HL\]\])?\s*([\u0621-\u064A]|[A-Da-d])[\)\.\-–—\uFF1A:؟](?=[\s\u00A0\t]*(?:\[\[HL\]\])?[\u0621-\u064A A-Za-z])'
+
+# mirrors inlineMarkerMarks: positions of option markers inside the line
+function Get-InlineMarks([string]$s) {
+    $marks = New-Object System.Collections.ArrayList
+    $re = [regex]::new($INLINE_MARKER)
+    foreach ($m in $re.Matches($s)) {
+        [void]$marks.Add([pscustomobject]@{
+            markStart = $m.Index
+            textStart = ($m.Index + $m.Length)
+            hlMarker  = $m.Value.Contains('[[HL]]')
+        })
+    }
+    return $marks
+}
+
+# mirrors segmentsFromMarks: option segments after the first marker
+function Get-SegmentsFromMarks([string]$raw, $marks) {
+    $segs = New-Object System.Collections.ArrayList
+    for ($mi = 0; $mi -lt $marks.Count; $mi++) {
+        $end = $raw.Length
+        if (($mi + 1) -lt $marks.Count) { $end = $marks[$mi + 1].markStart }
+        $len = [Math]::Max(0, $end - $marks[$mi].textStart)
+        $segRaw = $raw.Substring($marks[$mi].textStart, $len)
+        $segText = Get-OptionText ((Strip-HL $segRaw).Trim())
+        if ($segText.Length -eq 0) { continue }
+        $hl = $marks[$mi].hlMarker -or $segRaw.Contains('[[HL]]')
+        [void]$segs.Add([pscustomobject]@{ text = $segText; hl = $hl })
+    }
+    return $segs
+}
+
+# mirrors splitInlineQuestionLine: stem + all options in one line (horizontal shape)
+function Split-InlineQuestionLine([string]$raw) {
+    $marks = Get-InlineMarks $raw
+    if ($marks.Count -lt 2) { return $null }
+    $title = (Strip-SourceNumber (Strip-HL $raw.Substring(0, $marks[0].markStart))).Trim()
+    if ($title.Length -lt 2 -or $title.Length -gt 200) { return $null }
+    $segs = @(Get-SegmentsFromMarks $raw $marks)
+    if ($segs.Count -lt 2) { return $null }
+    return [pscustomobject]@{ title = $title; segs = $segs }
+}
+
 function Get-TableQuestion([System.Collections.ArrayList]$lines, [int]$start, [int]$n) {
-    # Mirrors TS tryParseTableQuestion: groups one 4-column table row (a question
-    # whose options are laid out across columns) into a single question block.
-    $letterRe = '^\[?[A-Da-d]{1}\s*[\)\.\uFF1A:]?\s*\]?$'
+    # Mirrors TS tryParseTableQuestion: groups one table-row question whose options
+    # sit on separate lines under standalone letters. Handles duplicated letters
+    # (mc:Fallback copies) and unnumbered stems (Word auto-numbering).
     $colonRe = '^[^:：]{1,60}[:：]\s*[^:：]{1,60}$'
 
     $stemRaw = $lines[$start]
     $stemClean = (Strip-HL $stemRaw).Trim()
     if ($stemClean.Length -eq 0 -or $stemClean.Length -gt 200) { return $null }
-    if ($stemClean -cmatch $letterRe) { return $null }
+    if (Test-OptionLetterLine $stemClean) { return $null }
 
     $options = New-Object System.Collections.ArrayList
     $correct = New-Object System.Collections.ArrayList
     $labeledCount = 0
+    $firstLetterIdx = -1
     $j = $start + 1
-
-    # If the stem itself is an analogy "word : word" or is highlighted, it is option أ.
-    $stemIsAnalogy = $stemClean -cmatch $colonRe
-    $stemHL = $stemRaw.Contains('[[HL]]')
-    $stemIsOption = $stemIsAnalogy -or $stemHL
-    if ($stemIsOption) {
-        $stemText = Get-OptionText $stemClean
-        if ($stemText.Length -gt 0) {
-            [void]$options.Add($stemText)
-            if ($stemHL) { [void]$correct.Add($stemText) }
-        }
-    }
 
     while ($j -lt $n) {
         $raw = $lines[$j]
         $clean = (Strip-HL $raw).Trim()
         if ($clean.Length -eq 0) { $j++; continue }
 
-        if ($clean -cmatch $letterRe) {
-            # The option letter; its text is on the next non-empty line.
+        if (Test-OptionLetterLine $clean) {
+            # skip duplicated consecutive letters (mc:Fallback) and blanks until
+            # the real option text line
             $k = $j + 1
-            while ($k -lt $n -and ((Strip-HL $lines[$k]).Trim().Length -eq 0)) { $k++ }
+            while ($k -lt $n) {
+                $t = (Strip-HL $lines[$k]).Trim()
+                if ($t.Length -eq 0 -or (Test-OptionLetterLine $t)) { $k++; continue }
+                break
+            }
             if ($k -ge $n) { break }
             $textRaw = $lines[$k]
             $textClean = (Strip-HL $textRaw).Trim()
             if (-not (Test-OptionText $textClean)) { break }
-            $optText = Get-OptionText $textClean
-            if ($optText.Length -gt 0) {
-                [void]$options.Add($optText)
+
+            if ($firstLetterIdx -lt 0) {
+                $lm = [regex]::Match($clean, $OPT_LETTER_LINE)
+                $li = $null
+                if ($lm.Success) { $li = Get-LetterIndex $lm.Groups[1].Value }
+                if ($null -eq $li) { $firstLetterIdx = 0 } else { $firstLetterIdx = $li }
+            }
+
+            # option text line carries extra merged options ("opt3 d) opt4") -- split all
+            $pieces = $null
+            $textMarks = Get-InlineMarks $textRaw
+            if ($textMarks.Count -ge 1) {
+                $pieces = New-Object System.Collections.ArrayList
+                $head = Get-OptionText ((Strip-HL $textRaw.Substring(0, $textMarks[0].markStart)).Trim())
+                if ($head.Length -gt 0) { [void]$pieces.Add([pscustomobject]@{ text = $head; hl = $textRaw.Contains('[[HL]]') }) }
+                foreach ($seg in (Get-SegmentsFromMarks $textRaw $textMarks)) {
+                    $hl2 = $seg.hl -or $textRaw.Contains('[[HL]]')
+                    [void]$pieces.Add([pscustomobject]@{ text = $seg.text; hl = $hl2 })
+                }
+                if ($pieces.Count -eq 0) { $pieces = $null }
+            }
+            if ($null -eq $pieces) {
+                $pieces = @([pscustomobject]@{ text = (Get-OptionText $textClean); hl = $textRaw.Contains('[[HL]]') })
+            }
+
+            foreach ($piece in $pieces) {
+                if ($piece.text.Length -eq 0) { continue }
+                [void]$options.Add($piece.text)
                 $labeledCount++
-                if ($raw.Contains('[[HL]]') -or $textRaw.Contains('[[HL]]')) { [void]$correct.Add($optText) }
+                if ($piece.hl -or $raw.Contains('[[HL]]')) { [void]$correct.Add($piece.text) }
             }
             $j = $k + 1
             if ($options.Count -ge 4) { break }
@@ -331,6 +430,22 @@ function Get-TableQuestion([System.Collections.ArrayList]$lines, [int]$start, [i
     # Only treat as a table question if it has >=2 separately-labeled options
     # (a real table layout); otherwise leave it to the generic parser.
     if ($labeledCount -lt 2) { return $null }
+
+    # The stem itself is option (A) only when letters start from (B) onward --
+    # the question column then holds the highlighted option. When letters start
+    # from (A), the stem is the question text.
+    $stemClean0 = (Strip-HL $stemRaw).Trim()
+    $stemIsAnalogy = $stemClean0 -cmatch $colonRe
+    $stemHL = $stemRaw.Contains('[[HL]]')
+    $stemIsOption = ($firstLetterIdx -ge 1) -and ($stemIsAnalogy -or $stemHL)
+    if ($stemIsOption) {
+        $stemText = Get-OptionText $stemClean0
+        if ($stemText.Length -gt 0) {
+            [void]$options.Insert(0, $stemText)
+            if ($stemHL) { [void]$correct.Insert(0, $stemText) }
+        }
+    }
+
     if ($options.Count -lt 2) { return $null }
     return [pscustomobject]@{
         stemIndex   = $start
@@ -339,6 +454,106 @@ function Get-TableQuestion([System.Collections.ArrayList]$lines, [int]$start, [i
         correct     = @($correct.ToArray())
         end         = $j
     }
+}
+
+# mirrors collectTrailingOptions in doc-parser.ts: keep consuming option lines
+# after a partially-filled question (mixed layout: some options inline, the rest
+# stacked on following lines) until MaxTotal options or a stop condition.
+# AllowLoneLetter=true also accepts "letter-only line + its text on the next line".
+function Get-TrailingOptions([int]$StartJ, $Lines, [int]$N, [string[]]$SeedOptions, [string[]]$SeedCorrect, [int]$SeedPrefixed, [bool]$AllowLoneLetter, [int]$MaxTotal) {
+    $options = New-Object System.Collections.ArrayList
+    $correct = New-Object System.Collections.ArrayList
+    foreach ($o in $SeedOptions) { [void]$options.Add($o) }
+    foreach ($c in $SeedCorrect) { [void]$correct.Add($c) }
+    $prefixedCount = $SeedPrefixed
+    $j = $StartJ
+
+    while ($j -lt $N -and $options.Count -lt $MaxTotal) {
+        $optRaw = $Lines[$j]
+        $optClean = Strip-HL $optRaw
+        if ($optClean.Length -eq 0) { $j++; continue }
+        # answer-key line after options -- never swallowed as an option
+        if (Test-AnswerLine $optClean) { break }
+        if ((Test-QuestionNumberLine $optClean) -or (Test-SectionHeader $optClean)) { break }
+        if (Test-PassageStart $optClean) { break }
+        if ($optClean.Length -gt 80) { break }
+        if ($optClean -cmatch '[?\u061F]\s*$') { break }
+
+        # standalone true/false option ("sah" / "(khata)")
+        if (Test-TFWord $optClean) {
+            $w = Get-NormalizeTF $optClean
+            [void]$options.Add($w)
+            if ($optRaw.Contains('[[HL]]')) { [void]$correct.Add($w) }
+            $j++
+            $prefixedCount++
+            continue
+        }
+
+        # option letter on its own line followed by a true/false word
+        if (Test-OptionLetterLine $optClean) {
+            $k = $j + 1
+            while ($k -lt $n -and ((Strip-HL $lines[$k]).Trim().Length -eq 0)) { $k++ }
+            if ($k -lt $n -and (Test-TFWord ((Strip-HL $lines[$k]).Trim()))) {
+                $w = Get-NormalizeTF ((Strip-HL $lines[$k]).Trim())
+                [void]$options.Add($w)
+                if ($optRaw.Contains('[[HL]]') -or $lines[$k].Contains('[[HL]]')) { [void]$correct.Add($w) }
+                $j = $k + 1
+                $prefixedCount++
+                continue
+            }
+            # mixed layout: a lone option letter, its text on the next line
+            if ($AllowLoneLetter -and $k -lt $n) {
+                $textRaw = $lines[$k]
+                $textClean = (Strip-HL $textRaw).Trim()
+                if (Test-OptionText $textClean) {
+                    $loneText = Get-OptionText $textClean
+                    if ($loneText.Length -gt 0) {
+                        [void]$options.Add($loneText)
+                        if ($optRaw.Contains('[[HL]]') -or $textRaw.Contains('[[HL]]')) { [void]$correct.Add($loneText) }
+                        $j = $k + 1
+                        $prefixedCount++
+                        continue
+                    }
+                }
+            }
+            break
+        }
+
+        # multi options merged into one line (mixed layout): "opt3 d) opt4"
+        # a line starting with stem text then options = a new inline question
+        $optMarks = Get-InlineMarks $optRaw
+        if ($optMarks.Count -ge 1) {
+            $headText = (Strip-HL $optRaw.Substring(0, $optMarks[0].markStart)).Trim()
+            $multiSegs = Get-SegmentsFromMarks $optRaw $optMarks
+            if ($headText.Length -ge 2 -and $multiSegs.Count -ge 1) { break }
+            if ($multiSegs.Count -ge 2) {
+                foreach ($sg in $multiSegs) {
+                    [void]$options.Add($sg.text)
+                    if ($sg.hl -or $optRaw.Contains('[[HL]]')) { [void]$correct.Add($sg.text) }
+                }
+                $prefixedCount += $multiSegs.Count
+                $j++
+                if ($options.Count -ge $MaxTotal) { break }
+                continue
+            }
+        }
+
+        $prefixed = Test-OptionPrefix $optClean
+        $hasColon = $optClean -cmatch '^[^:]{1,60}[:\uFF1A]\s*[^:]{1,60}$'
+        $isOpt = $prefixed -or ($hasColon -and $prefixedCount -eq 0)
+        if (-not $isOpt) { break }
+
+        $optText = Get-OptionText $optClean
+        if ($optText.Length -gt 0) {
+            [void]$options.Add($optText)
+            if ($optRaw.Contains('[[HL]]')) { [void]$correct.Add($optText) }
+            if ($prefixed) { $prefixedCount++ }
+        }
+        $j++
+        if ($options.Count -ge $MaxTotal) { break }
+    }
+
+    return [pscustomobject]@{ end = $j; options = $options; correct = $correct }
 }
 
 function Parse-DocText([string]$raw) {
@@ -464,6 +679,55 @@ function Parse-DocText([string]$raw) {
         }
         # =====================================================================
 
+        # ===== inline question line: stem + all options merged in one line =====
+        $inlineQ = Split-InlineQuestionLine $cur
+        if ($null -ne $inlineQ) {
+            $qnum++
+            $hOptions = New-Object System.Collections.ArrayList
+            $hCorrect = New-Object System.Collections.ArrayList
+            foreach ($sg in $inlineQ.segs) {
+                [void]$hOptions.Add($sg.text)
+                if ($sg.hl) { [void]$hCorrect.Add($sg.text) }
+            }
+            # mixed layout: if this line carries fewer than 4 options, keep
+            # consuming the option lines that follow (stacked letters/text)
+            $inlineEnd = $i + 1
+            if ($hOptions.Count -lt 4) {
+                $more = Get-TrailingOptions ($i + 1) $lines $n @($hOptions.ToArray()) @($hCorrect.ToArray()) $hOptions.Count $true 4
+                $hOptions = $more.options
+                $hCorrect = $more.correct
+                $inlineEnd = $more.end
+            }
+            $tfU = New-Object System.Collections.ArrayList
+            $allTFh = $true
+            foreach ($o in $hOptions) {
+                $w = Get-NormalizeTF $o
+                if (-not (Test-TFWord $w)) { $allTFh = $false; break }
+                if (-not $tfU.Contains($w)) { [void]$tfU.Add($w) }
+            }
+            $isTFh = ($allTFh -and ($tfU.Count -ge 2))
+            $finalH = @($hOptions.ToArray())
+            $finalHC = @($hCorrect.ToArray())
+            if ($isTFh) {
+                $finalH = @($tfU.ToArray())
+                $tfCh = New-Object System.Collections.ArrayList
+                foreach ($c in $hCorrect) {
+                    $w = Get-NormalizeTF $c
+                    if ((Test-TFWord $w) -and (-not $tfCh.Contains($w))) { [void]$tfCh.Add($w) }
+                }
+                $finalHC = @($tfCh.ToArray())
+            }
+            [void]$blocks.Add([pscustomobject]@{
+                kind     = $(if ($isTFh) { 'truefalse' } else { 'radio' })
+                title    = ($qnum.ToString() + '. ' + $inlineQ.title)
+                options  = $finalH
+                correct  = $finalHC
+                sourceNo = (Get-SourceNo $cur)
+            })
+            $i = $inlineEnd
+            continue
+        }
+
         # ===== table-row question grouping (4 columns) — priority over generic pass =====
         $tq = Get-TableQuestion $lines $i $n
         if ($null -ne $tq) {
@@ -481,61 +745,11 @@ function Parse-DocText([string]$raw) {
         }
         # ====================================================================
 
-        $options = New-Object System.Collections.ArrayList
-        $correct = New-Object System.Collections.ArrayList
-        $prefixedCount = 0
-        $j = $i + 1
-
-        while ($j -lt $n) {
-            $optRaw = $lines[$j]
-            $optClean = Strip-HL $optRaw
-            if ($optClean.Length -eq 0) { $j++; continue }
-            # answer-key line after options -- never swallowed as an option
-            if (Test-AnswerLine $optClean) { break }
-            if ((Test-QuestionNumberLine $optClean) -or (Test-SectionHeader $optClean)) { break }
-            if (Test-PassageStart $optClean) { break }
-            if ($optClean.Length -gt 80) { break }
-            if ($optClean -cmatch '[?\u061F]\s*$') { break }
-
-            # standalone true/false option ("sah" / "(khata)")
-            if (Test-TFWord $optClean) {
-                $w = Get-NormalizeTF $optClean
-                [void]$options.Add($w)
-                if ($optRaw.Contains('[[HL]]')) { [void]$correct.Add($w) }
-                $j++
-                $prefixedCount++
-                continue
-            }
-
-            # option letter on its own line followed by a true/false word
-            if (Test-OptionLetterLine $optClean) {
-                $k = $j + 1
-                while ($k -lt $n -and ((Strip-HL $lines[$k]).Trim().Length -eq 0)) { $k++ }
-                if ($k -lt $n -and (Test-TFWord ((Strip-HL $lines[$k]).Trim()))) {
-                    $w = Get-NormalizeTF ((Strip-HL $lines[$k]).Trim())
-                    [void]$options.Add($w)
-                    if ($optRaw.Contains('[[HL]]') -or $lines[$k].Contains('[[HL]]')) { [void]$correct.Add($w) }
-                    $j = $k + 1
-                    $prefixedCount++
-                    continue
-                }
-                break
-            }
-
-            $prefixed = Test-OptionPrefix $optClean
-            $hasColon = $optClean -cmatch '^[^:]{1,60}[:\uFF1A]\s*[^:]{1,60}$'
-            $isOpt = $prefixed -or ($hasColon -and $prefixedCount -eq 0)
-            if (-not $isOpt) { break }
-
-            $optText = Get-OptionText $optClean
-            if ($optText.Length -gt 0) {
-                [void]$options.Add($optText)
-                if ($optRaw.Contains('[[HL]]')) { [void]$correct.Add($optText) }
-                if ($prefixed) { $prefixedCount++ }
-            }
-            $j++
-            if ($options.Count -ge 4) { break }
-        }
+        # lookahead: collect option lines following this line
+        $collected = Get-TrailingOptions ($i + 1) $lines $n @() @() 0 $false 4
+        $options = $collected.options
+        $correct = $collected.correct
+        $j = $collected.end
 
         if ($options.Count -ge 2) {
             $qnum++
@@ -953,6 +1167,131 @@ if ($b7.Count -ge 4) {
     foreach ($b in $b7) { if (Test-AnswerLine $b.title) { $noLeak7 = $false } }
     Check 'T7: no answer-key line leaked into a title' $noLeak7 ''
 }
+
+# =================================================================== TEST 8
+# الأشكال الخمسة لتنسيق أسئلة الاختيارات + أشكال الحروف العربية والإنجليزية
+# 1) رأسية: حرف على سطر مستقل ثم نصه على السطر التالي
+# 2) أفقية: كل الخيارات في السطر نفسه بعد نص السؤال
+# 3) مختلطة: خياران في سطر والباقي على أسطر منفصلة
+# 4) أرقام عربية ١. / ١- كترقيم للأسئلة
+# 5) حروف عربية بنقاط/قوس/شرطة + إنجليزية A) B. C- ونظائرها
+Write-Host '===== TEST 8 : five layout shapes + Arabic/English option letters ====='
+
+# ---- الشكل 1 (رأسية): "أ" سطر مستقل ثم نص الخيار، مع رقم عربي ١. ----
+$qa = U 0x627,0x644,0x633,0x645,0x627,0x621           # السماق
+$qb = U 0x627,0x644,0x62C,0x628,0x644                  # الجبل
+$qstem1 = (U 0x661,0x660,0x66B,0x20) + (U 0x645,0x627,0x20,0x639,0x627,0x62F,0x629,0x20) + $qa + (U 0x61F)  # ١٠. ما عاصمة السماق؟
+$optA = (U 0x623,0x29,0x20) + $qa                      # أ) السماق
+$optB = (U 0x628,0x2E,0x20) + $qb                      # ب. الجبل
+$optC = (U 0x62C,0x2D,0x20) + (U 0x627,0x644,0x645,0x62F,0x64A,0x6E2,0x629)   # ج- المدينة
+$optD = 'D. ' + (U 0x627,0x644,0x646,0x647,0x631)      # D. النهر
+$shape1 = @(
+    $qstem1
+    (U 0x623)                 # أ (حرف منفصل على سطر)
+    $optA
+    (U 0x628)                 # ب
+    $optB
+    (U 0x62C)                 # ج
+    $optC
+    (U 0x62F)                 # د
+    $optD
+) -join "`n"
+$b8a = Parse-DocText $shape1
+Write-Host ('--- shape1 (vertical, arabic-indic numbering): ' + $b8a.Count + ' blocks ---')
+Check 'T8-1: vertical shape -> exactly 1 question' ($b8a.Count -eq 1) ('got ' + $b8a.Count)
+if ($b8a.Count -ge 1) {
+    Check 'T8-1: is radio multiple-choice' ($b8a[0].kind -eq 'radio') $b8a[0].kind
+    Check 'T8-1: has 4 options' ($b8a[0].options.Count -eq 4) ($b8a[0].options -join ' | ')
+    Check 'T8-1: question number prefix stripped from title' (-not ($b8a[0].title -cmatch '^[\u0660-\u0669]{1,3}[\.\-]')) $b8a[0].title
+    Check 'T8-1: no lone letter left as an option' (-not ($b8a[0].options -cmatch '^[\u0621-\u064A]$')) ($b8a[0].options -join ' | ')
+    Check 'T8-1: A) B. C- D. prefixes all stripped' (($b8a[0].options[0] -ceq $qa) -and ($b8a[0].options[1] -ceq $qb)) ($b8a[0].options -join ' | ')
+}
+
+# ---- الشكل 2 (أفقية): كل الخيارات في السطر نفسه ----
+$optA2 = (U 0x623,0x29,0x20) + (U 0x639,0x645,0x644,0x3A,0x20,0x623,0x62C,0x631,0x629)          # أ) عمل : أجرة
+$optB2 = (U 0x628,0x2E,0x20) + (U 0x62D,0x631,0x627,0x62D,0x3A,0x20,0x645,0x646,0x627,0x629)   # ب. حراس : مناعة
+$optC2 = (U 0x62C,0x2D,0x20) + (U 0x639,0x644,0x645,0x3A,0x20,0x62A,0x639,0x644,0x645)          # ج- علم : تعلم
+$optD2 = 'D) ' + (U 0x642,0x644,0x645,0x3A,0x20,0x643,0x62A,0x627,0x628)                        # D) قلم : كتاب
+$qstem2 = (U 0x31,0x31,0x2E,0x20) + (U 0x633,0x64A,0x644,0x627,0x646,0x3A,0x20,0x62F,0x645,0x20,0x20,0x20)  # 11. سيلان : دم
+$shape2 = $qstem2 + $optA2 + '   ' + $optB2 + '   ' + $optC2 + '   ' + $optD2
+$b8b = Parse-DocText $shape2
+Write-Host ('--- shape2 (horizontal, all in one line): ' + $b8b.Count + ' blocks ---')
+Check 'T8-2: horizontal shape -> exactly 1 question' ($b8b.Count -eq 1) ('got ' + $b8b.Count)
+if ($b8b.Count -ge 1) {
+    $silan = U 0x633,0x64A,0x644,0x627,0x646,0x3A,0x20,0x62F,0x645
+    Check 'T8-2: title is the stem before first marker' ($b8b[0].title -cmatch $silan) $b8b[0].title
+    Check 'T8-2: has 4 options' ($b8b[0].options.Count -eq 4) ($b8b[0].options -join ' | ')
+    Check 'T8-2: first option is the text after أ)' ($b8b[0].options[0] -cmatch (U 0x639,0x645,0x644)) ($b8b[0].options -join ' | ')
+    Check 'T8-2: D) english marker stripped (no D left)' (-not ($b8b[0].options -cmatch '^D\)')) ($b8b[0].options -join ' | ')
+    Check 'T8-2: number 11. stripped from title' (-not ($b8b[0].title -cmatch '^11\.')) $b8b[0].title
+}
+
+# ---- الشكل 3 (مختلطة): خياران في سطر ثم букوتان على سطرين ----
+$qstem3 = (U 0x31,0x32,0x2E,0x20) + (U 0x645,0x627,0x20,0x62D,0x64A,0x648,0x627,0x6E2,0x20,0x645,0x646,0x20,0x627,0x644,0x645,0x646,0x627,0x62C,0x638,0x61F)  # 12. ما حيوان من المناجز؟
+$p1 = (U 0x623,0x29,0x20) + (U 0x627,0x644,0x623,0x631,0x646,0x628)      # أ) الأرنب
+$p2 = (U 0x628,0x29,0x20) + (U 0x627,0x644,0x623,0x633,0x62F)              # ب) الأسد
+$rest3 = @(
+    (U 0x62C) + '. ' + (U 0x627,0x644,0x62C,0x645,0x644)                  # ج. الجمل
+    (U 0x62F) + '- ' + (U 0x627,0x644,0x645,0x627,0x631,0x62F)             # د- المارد
+) -join "`n"
+$shape3 = ($qstem3 + '   ' + $p1 + '   ' + $p2) + "`n" + $rest3
+$b8c = Parse-DocText $shape3
+Write-Host ('--- shape3 (mixed: two inline + two stacked): ' + $b8c.Count + ' blocks ---')
+Check 'T8-3: mixed shape -> exactly 1 question' ($b8c.Count -eq 1) ('got ' + $b8c.Count)
+if ($b8c.Count -ge 1) {
+    Check 'T8-3: has 4 options total' ($b8c[0].options.Count -eq 4) ($b8c[0].options -join ' | ')
+    Check 'T8-3: inline + stacked options merged in order' (($b8c[0].options[2] -cmatch (U 0x627,0x644,0x62C,0x645,0x644)) -and ($b8c[0].options[3] -cmatch (U 0x627,0x644,0x645,0x627,0x631,0x62F))) ($b8c[0].options -join ' | ')
+}
+
+# ---- الشكل 4: ترقيم أرقام عربية ١- / ١. مع حروف خيارات بنقاط وقوس وشرطة ----
+$qstem4 = (U 0x661,0x663,0x2D,0x20) + (U 0x627,0x644,0x62A,0x641,0x627,0x635,0x64A,0x644,0x20,0x627,0x644,0x635,0x62D,0x64A,0x62D,0x629,0x3A,0x20,0x645,0x627,0x20,0x645,0x62F,0x649,0x20,0x62A,0x646,0x627,0x648,0x639,0x61F)  # ١٣- التفاصيل الصحيحة: ما مدى تناوع؟
+$o4a = (U 0x661,0x29,0x20) + (U 0x642,0x644,0x64A,0x644,0x627,0x64B)     # ١) قليلاً
+$o4b = (U 0x662,0x29,0x20) + (U 0x643,0x62B,0x64A,0x631,0x627,0x64B)      # ٢) كثيراً
+$o4c = (U 0x663,0x2D,0x20) + (U 0x62F,0x627,0x626,0x645,0x627,0x64B)      # ٣- دائماً
+$o4d = (U 0x664,0x29,0x20) + (U 0x623,0x62D,0x64A,0x627,0x646,0x627,0x64B)  # ٤) أحياناً
+$shape4 = @($qstem4, $o4a, $o4b, $o4c, $o4d) -join "`n"
+$b8d = Parse-DocText $shape4
+Write-Host ('--- shape4 (arabic-indic 1- numbering): ' + $b8d.Count + ' blocks ---')
+Check 'T8-4: arabic-indic numbered question -> 1 block' ($b8d.Count -eq 1) ('got ' + $b8d.Count)
+if ($b8d.Count -ge 1) {
+    Check 'T8-4: has 4 options' ($b8d[0].options.Count -eq 4) ($b8d[0].options -join ' | ')
+    Check 'T8-4: arabic-indic digit prefixes ١) ٢. ٣- ٤? stripped' (($b8d[0].options[0] -ceq (U 0x642,0x644,0x64A,0x644,0x627,0x64B)) -and ($b8d[0].options[3] -cmatch (U 0x623,0x62D,0x64A,0x627,0x646))) ($b8d[0].options -join ' | ')
+    Check 'T8-4: title number ١٣- stripped' (-not ($b8d[0].title -cmatch '^[\u0660-\u0669]{1,3}[\.\-]')) $b8d[0].title
+}
+
+# ---- الشكل 5: عناوين طويلة + أشكال حروف متنوعة عربي/إنجليزي في سطر واحد ----
+$longTitle = (U 0x627,0x644) + (U 0x62A,0x6CC,0x627,0x631,0x20) + (U 0x627,0x644,0x635,0x646,0x627,0x639,0x691,0x64A,0x20) + (U 0x627,0x644,0x630,0x64A,0x20,0x64A,0x648,0x631,0x62B,0x64A,0x20,0x645,0x646,0x20,0x627,0x644,0x628,0x64A,0x639,0x20,0x648,0x627,0x644,0x62A,0x639,0x644,0x645,0x20,0x648,0x627,0x644,0x62A,0x631,0x62C,0x645,0x627,0x646,0x20,0x627,0x644,0x645,0x62D,0x62A,0x645,0x644,0x64A,0x646,0x20,0x639,0x646,0x20,0x62A,0x639,0x62F,0x64A,0x644,0x20,0x627,0x644,0x645,0x639,0x644,0x648,0x645,0x627,0x62A,0x20,0x648,0x627,0x644,0x645,0x639,0x631,0x641,0x627,0x62A,0x20,0x627,0x644,0x62A,0x6CC,0x627,0x631,0x64A,0x629,0x20,0x641,0x64A,0x20,0x639,0x627,0x644,0x645,0x20,0x627,0x644,0x62A,0x639,0x644,0x651,0x645,0x20,0x627,0x644,0x639,0x631,0x642,0x64A,0x3F)  # عنوان طويل >150
+$qstem5 = '14. ' + $longTitle
+$h1 = (U 0x623,0x61F,0x20) + (U 0x627,0x644,0x639,0x631,0x642,0x64A)      # أ? العربي
+$h2 = (U 0x628,0x2D,0x20) + (U 0x627,0x644,0x62B,0x642,0x627,0x626,0x64A)  # ب- الثقائي
+$h3 = 'C) ' + (U 0x627,0x644,0x639,0x644,0x645,0x64A)                     # C) العلمي
+$h4 = 'D. ' + (U 0x627,0x644,0x628,0x634,0x631,0x64A)                     # D. البحري
+$shape5 = $qstem5 + '   ' + $h1 + '   ' + $h2 + '   ' + $h3 + '   ' + $h4
+$b8e = Parse-DocText $shape5
+Write-Host ('--- shape5 (long title + mixed ar/en letters): ' + $b8e.Count + ' blocks ---')
+Check 'T8-5: long-title question -> 1 block' ($b8e.Count -eq 1) ('got ' + $b8e.Count)
+if ($b8e.Count -ge 1) {
+    Check 'T8-5: long title preserved (>100 chars)' ($b8e[0].title.Length -gt 100) ('len=' + $b8e[0].title.Length)
+    Check 'T8-5: has 4 options' ($b8e[0].options.Count -eq 4) ($b8e[0].options -join ' | ')
+    Check 'T8-5: arabic ?-dash and english C) D. markers stripped' (($b8e[0].options[0] -cmatch (U 0x627,0x644,0x639,0x631,0x642,0x64A)) -and ($b8e[0].options[2] -cmatch (U 0x627,0x644,0x639,0x644,0x645,0x64A))) ($b8e[0].options -join ' | ')
+    Check 'T8-5: no option is a bare letter' (-not ($b8e[0].options -cmatch '^[\u0621-\u064A]$|^[\x41-\x44]$')) ($b8e[0].options -join ' | ')
+}
+
+# ---- تركيبة الأشكال الخمسة كلها في ملف واحد ----
+$shapeAll = @($shape1, $shape2, $shape3, $shape4, $shape5) -join "`n`n"
+$b8all = Parse-DocText $shapeAll
+Write-Host ('--- all five shapes combined: ' + $b8all.Count + ' blocks ---')
+Check 'T8-ALL: five shapes -> 5 questions' ($b8all.Count -eq 5) ('got ' + $b8all.Count)
+Check 'T8-ALL: every question is radio with 4 options' (@($b8all | Where-Object { ($_.kind -ne 'radio') -or ($_.options.Count -ne 4) }).Count -eq 0) ((@($b8all | ForEach-Object { $_.kind + ':' + $_.options.Count }) -join ' '))
+$bareLetterLeak = $false
+foreach ($b in $b8all) {
+    foreach ($o in $b.options) {
+        if ($o -cmatch '^[\u0621-\u064A]$' -or $o -cmatch '^[A-Da-d]$') { $bareLetterLeak = $true }
+        if ($o -cmatch '^\d{1,2}[\.\-\)]') { $bareLetterLeak = $true }
+    }
+    if (($b.title -replace '^\d{1,3}[\.\-\)]\s*','') -cmatch '^\d') { $bareLetterLeak = $true }
+}
+Check 'T8-ALL: no bare letter/number prefix leaked into text' (-not $bareLetterLeak) ''
 
 Write-Host ''
 if ($script:fail -eq 0) { Write-Host 'ALL TESTS PASSED' }

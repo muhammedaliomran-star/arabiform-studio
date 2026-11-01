@@ -119,47 +119,102 @@ async function readDocxFile(file: File): Promise<string> {
     return m ? isYellowFill(m[1]) : false;
   };
 
-  // تقسيم المستند بواسطة إغلاق الفقرة </w:p> — كل كتلة تُعالج بشكل مستقل.
-  // هذا يضمن معالجة الفقرات داخل خلايا الجدول (<w:tc>) حيث إن التظليل
-  // قد يكون على الحرف <w:highlight> أو على الفقرة/الخلية <w:shd>.
-  const paraBlocks = xml.split("</w:p>");
+  // محتوى mc:Fallback نسخة مكرّرة من mc:Choice (Word يحفظ كل صندوق نص
+  // مرتين لإصداراته القديمة) — إزالته تمنع تكرار الحروف والنصوص وهو السبب
+  // الرئيسي في فشل تجميع خيارات الأسئلة (حرف الخيار يظهر مرتين).
+  const bodyXml = xml.replace(/<mc:Fallback\b[^>]*>[\s\S]*?<\/mc:Fallback>/g, "");
+
+  // نص الرنز بالكامل بترتيبه: كل <w:t> (لا النص الأول فقط) + <w:tab/> كمسافة
+  // + <w:br/> و<w:cr/> كفاصل أسطر جديد داخل الفقرة الواحدة.
+  const runText = (run: string): string => {
+    const tokens = run.match(
+      /<w:t(?:\s[^>]*)?>[\s\S]*?<\/w:t>|<w:tab\b[^>]*\/>|<w:br\b[^>]*\/>|<w:cr\b[^>]*\/>/g,
+    );
+    if (!tokens) return "";
+    let out = "";
+    for (const tok of tokens) {
+      if (tok.startsWith("<w:t")) {
+        const m = tok.match(/^<w:t(?:\s[^>]*)?>([\s\S]*)<\/w:t>$/);
+        if (m) out += decodeXml(m[1]);
+      } else if (tok.startsWith("<w:tab")) {
+        out += "\t";
+      } else {
+        out += "\n";
+      }
+    }
+    return out;
+  };
+
+  // نجمع حدود الفقرات والخلايا أولاً: الفقرة ذاتية الإغلاق <w:p .../> لا تحوي
+  // </w:p> ولا يجوز أن يمتد البحث خلفها إلى فقرة تالية، وتظليل الخلية
+  // يتتبّع عبر مكدّس يدعم الخلايا المتداخلة.
+  const tokens: Array<{ idx: number; len: number; val: string }> = [];
+  const tokenRe = /<w:tc[\s>]|<\/w:tc[\s>]|<w:p[\s>]/g;
+  let tm: RegExpExecArray | null;
+  while ((tm = tokenRe.exec(bodyXml)) !== null) {
+    tokens.push({ idx: tm.index, len: tm[0].length, val: tm[0] });
+  }
+
   const lines: string[] = [];
-
-  for (const block of paraBlocks) {
-    // العثور على علامة فتح الفقرة <w:p ...>
-    const pOpenMatch = block.match(/<w:p[\s>][\s\S]*?>/);
-    const pContent = pOpenMatch ? block.slice(pOpenMatch[0].length) : block;
-
-    // تظليل الفقرة نفسها <w:pPr><w:shd .../> يغطي كل نصها.
-    const pPrIdx = pContent.indexOf("<w:pPr");
-    const pPrEnd = pContent.indexOf("</w:pPr>");
-    const paraShaded =
-      pPrIdx >= 0 && pPrEnd > pPrIdx && hasYellowShading(pContent.slice(pPrIdx, pPrEnd + 9));
-
-    // تظليل الخلية الجدولية التي ينتمي إليها النص (ما قبل فتح الفقرة).
-    const beforeP = pOpenMatch ? block.slice(0, pOpenMatch.index) : "";
-    const cellShaded = hasYellowShading(beforeP);
+  const cellShadedStack: boolean[] = [];
+  for (let ti = 0; ti < tokens.length; ti++) {
+    const t = tokens[ti];
+    if (t.val.startsWith("</w:tc")) {
+      cellShadedStack.pop();
+      continue;
+    }
+    if (t.val.startsWith("<w:tc")) {
+      // تظليل الخلية يكون في ترويسة <w:tcPr> قبل أول فقرة بداخلها
+      const prEnd = bodyXml.indexOf("</w:tcPr>", t.idx);
+      const firstP = bodyXml.indexOf("<w:p", t.idx);
+      let headEnd = prEnd >= 0 ? prEnd + 9 : t.idx + 1500;
+      if (firstP >= 0 && firstP < headEnd) headEnd = firstP;
+      const len = Math.max(0, Math.min(headEnd, bodyXml.length) - t.idx);
+      cellShadedStack.push(hasYellowShading(bodyXml.slice(t.idx, t.idx + len)));
+      continue;
+    }
+    // فقرة نصية <w:p ...>
+    const paraStart = t.idx + t.len;
+    const nextIdx = ti + 1 < tokens.length ? tokens[ti + 1].idx : bodyXml.length;
+    let paraEnd = bodyXml.indexOf("</w:p>", paraStart);
+    if (paraEnd < 0 || nextIdx < paraEnd) paraEnd = nextIdx;
+    const content = bodyXml.slice(paraStart, Math.max(paraStart, paraEnd));
 
     const parts: string[] = [];
     const runRe = /<w:r[\s>]([\s\S]*?)<\/w:r>/g;
     let rm: RegExpExecArray | null;
-    while ((rm = runRe.exec(pContent)) !== null) {
+    while ((rm = runRe.exec(content)) !== null) {
       const runContent = rm[1];
       const isHighlighted =
         /<w:highlight[^>]*w:val="yellow"/i.test(runContent) || hasYellowShading(runContent);
-      const tMatch = runContent.match(/<w:t[^>]*>([^<]*)<\/w:t>/);
-      const text = tMatch ? decodeXml(tMatch[1]) : "";
-      if (text.length === 0) continue;
-      if (isHighlighted) {
-        parts.push("[[HL]]" + text + "[[/HL]]");
-      } else {
-        parts.push(text);
-      }
+      const text = runText(runContent);
+      if (!text) continue;
+      // نص الرنز يُحفظ حرفياً (بما فيه المسافات بين الرنز)؛ فاصل الأسطر
+      // <w:br/> فقط يبدأ مقطعاً جديداً بتظليله المستقل.
+      parts.push(
+        isHighlighted
+          ? text
+              .split("\n")
+              .map((s) => "[[HL]]" + s + "[[/HL]]")
+              .join("\n")
+          : text,
+      );
     }
 
-    let line = parts.join("").trim();
-    if ((paraShaded || cellShaded) && line) line = "[[HL]]" + line + "[[/HL]]";
-    if (line) lines.push(line);
+    // تظليل الفقرة نفسها <w:pPr><w:shd .../> أو الخلية المحيطة
+    const pPrIdx = content.indexOf("<w:pPr");
+    const pPrEnd = content.indexOf("</w:pPr>");
+    const paraShaded =
+      pPrIdx >= 0 && pPrEnd > pPrIdx && hasYellowShading(content.slice(pPrIdx, pPrEnd + 9));
+    const cellShaded = cellShadedStack.some(Boolean);
+
+    const line = parts.join("").trim();
+    if (!line) continue;
+    for (const seg of line.split("\n")) {
+      const s = seg.trim();
+      if (!s) continue;
+      lines.push(paraShaded || cellShaded ? "[[HL]]" + s + "[[/HL]]" : s);
+    }
   }
 
   const joined = lines.join("\n");

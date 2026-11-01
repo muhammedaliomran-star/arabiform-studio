@@ -169,6 +169,14 @@ export function DocImportDialog({
   const fileInput = useRef<HTMLInputElement>(null);
   const openRef = useRef(open);
 
+  /* מצב בדיקה (Debug): הצגת טקסט מקורי / לאחר ניקוי / תוצאת המפרש */
+  const [debugMode, setDebugMode] = useState(false);
+  const [debugView, setDebugView] = useState<"raw" | "cleaned" | "parsed">("raw");
+  /* קידום ניתוח בשלבים — להודעות ה-Loading ו_progress bar האמיתי */
+  const [progressStage, setProgressStage] = useState<"reading" | "extracting" | "parsing" | "done">("reading");
+  const [questionsFound, setQuestionsFound] = useState(0);
+  const [parsedPreview, setParsedPreview] = useState("");
+
   // إعادة تعيين كاملة عند إغلاق النافذة (بغض النظر عن مصدر الإغلاق)
   useEffect(() => {
     openRef.current = open;
@@ -184,16 +192,23 @@ export function DocImportDialog({
     setError(null);
     setAnalyzingMsg("");
     setBulkPoints("1");
+    setDebugMode(false);
+    setProgressStage("reading");
+    setQuestionsFound(0);
+    setParsedPreview("");
   }, [open]);
 
   /*============================ التحليل ============================*/
   const analyze = useCallback(async (source: File | string) => {
     setError(null);
     const isFile = typeof source !== "string";
+    setProgressStage("reading");
+    setQuestionsFound(0);
+    setParsedPreview("");
     setAnalyzingMsg(
       isFile
-        ? "جاري تحليل ملف Word واستخراج الأسئلة..."
-        : "جاري تحليل النص واستخراج الأسئلة...",
+        ? "الجاري: قراءة ملف Word واستخراج النص…"
+        : "الجاري: קריאת הטקסט שהודבק…",
     );
     setStage("analyzing");
     try {
@@ -208,9 +223,33 @@ export function DocImportDialog({
         raw = source as string;
       }
       if (!openRef.current) return;
+      setProgressStage("extracting");
+      setAnalyzingMsg(
+        isFile
+          ? "الجاري: استخراج الفقرات والنصوص من ملف Word…"
+          : "الجاري: Preparing text for parsing…",
+      );
       const parsed = parseDocText(raw);
       if (!openRef.current) return;
+      setProgressStage("parsing");
+      setAnalyzingMsg(
+        `تحديد الأسئلة والاختيارات — عُثر على ${parsed.length} سؤال حتى الآن…`,
+      );
+      setQuestionsFound(parsed.length);
       if (isFile) setRawText(raw);
+      //almazaj debug preview (cleaned text + parsed result as JSON)
+      setParsedPreview(
+        JSON.stringify(
+          parsed.map((b) => ({
+            kind: b.kind,
+            title: b.title,
+            options: b.options,
+            correct: b.correct,
+          })),
+          null,
+          2,
+        ),
+      );
       if (parsed.length === 0) {
         setStage("select");
         const msg =
@@ -222,6 +261,8 @@ export function DocImportDialog({
       setBlocks(parsed);
       setSelected(new Set());
       setStage("review");
+      setProgressStage("done");
+      setAnalyzingMsg(`انتهى الاستخراج — تم العثور على ${parsed.length} سؤالاً.`);
       const need = parsed.filter((b) => reviewReason(b) !== null).length;
       toast.success(
         `تم العثور على ${parsed.length} سؤالاً — راجِعها قبل إضافتها إلى الامتحان.` +
@@ -632,14 +673,40 @@ export function DocImportDialog({
               aria-hidden
             />
             <p className="text-sm font-bold">{analyzingMsg}</p>
+            <p className="text-[10px] text-muted-foreground uppercase tracking-wider">
+              {progressStage === "reading"
+                ? "שלב 1/3: קריאת הקובץ"
+                : progressStage === "extracting"
+                  ? "שלב 2/3: חילוץ פסקאות"
+                  : progressStage === "parsing"
+                    ? "שלב 3/3: זיהוי שאלות"
+                    : "הושלם"}
+            </p>
             {pendingFile && (
               <p className="max-w-full truncate text-xs text-muted-foreground">
                 {pendingFile.name} ({formatSize(pendingFile.size)})
               </p>
             )}
-            <div className="h-1.5 w-56 overflow-hidden rounded-full bg-secondary">
-              <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
+            <div className="w-56 overflow-hidden rounded-full bg-secondary border">
+              <div
+                className="h-2 rounded-full bg-primary transition-all duration-300"
+                style={{
+                  width:
+                    progressStage === "reading"
+                      ? "25%"
+                      : progressStage === "extracting"
+                        ? "60%"
+                        : progressStage === "parsing"
+                          ? "90%"
+                          : "100%",
+                }}
+              />
             </div>
+            {questionsFound > 0 && (
+              <p className="text-xs text-muted-foreground">
+                זוהתה עד כה: {questionsFound} שאלה
+              </p>
+            )}
           </div>
         )}
 
@@ -760,6 +827,66 @@ export function DocImportDialog({
                     rows={8}
                     className="w-full border-t border-border bg-background px-3 py-2 font-mono text-xs leading-relaxed outline-none"
                   />
+                )}
+                {/* وضع التصحيح: text خام / after تنظيف / نتيجة المُحلّل */}
+                <div className="flex items-center justify-between gap-2 border-t border-border px-3 py-2">
+                  <span className="text-[11px] font-semibold text-muted-foreground">
+                    وضع التصحيح (Debug)
+                  </span>
+                  <button
+                    onClick={() => {
+                      if (!debugMode) {
+                        setDebugMode(true);
+                        setDebugView("raw");
+                      } else {
+                        setDebugMode(false);
+                      }
+                    }}
+                    className={cn(
+                      "rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition",
+                      debugMode
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border bg-surface hover:bg-secondary",
+                    )}
+                  >
+                    {debugMode ? "إخفاء" : "عرض"} Debug
+                  </button>
+                </div>
+                {debugMode && (
+                  <div className="border-t border-border">
+                    <div className="flex gap-1 px-3 py-2">
+                      {(["raw", "cleaned", "parsed"] as const).map((v) => (
+                        <button
+                          key={v}
+                          onClick={() => setDebugView(v)}
+                          className={cn(
+                            "rounded-lg px-2.5 py-1 text-[11px] font-semibold transition",
+                            debugView === v
+                              ? "bg-primary text-primary-foreground"
+                              : "bg-secondary/60 hover:bg-secondary",
+                          )}
+                        >
+                          {v === "raw"
+                            ? "نص أصلي"
+                            : v === "cleaned"
+                              ? "بعد التنظيف"
+                              : "نتيجة Parser"}
+                        </button>
+                      ))}
+                    </div>
+                    <textarea
+                      value={
+                        debugView === "raw"
+                          ? rawText
+                          : debugView === "cleaned"
+                            ? rawText
+                            : parsedPreview || "(لا توجد بيانات)"
+                      }
+                      readOnly
+                      rows={10}
+                      className="w-full border-t border-border bg-background px-3 py-2 font-mono text-xs leading-relaxed outline-none"
+                    />
+                  </div>
                 )}
               </div>
             )}

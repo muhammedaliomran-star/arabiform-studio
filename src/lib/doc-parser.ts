@@ -171,12 +171,12 @@ export function parseDocText(raw: string): ParsedBlock[] {
     t = t.replace(/^\d{1,2}\s+/, "");
     // Regular digit tight + Arabic letter: "1murder" (no space)
     t = t.replace(/^\d{1,2}(?=[\u0621-\u064A])/, "");
-    // Arabic single letter + paren/dot/colon: "أ) " "أ. " "أ: "
-    t = t.replace(/^[\u0621-\u064A][\)\.\uFF1A:]\s*/, "");
+    // Arabic single letter + paren/dot/colon/dash/question-mark: "أ) " "أ. " "أ: " "أ؟ "
+    t = t.replace(/^[\u0621-\u064A][\)\.\-–—\uFF1A:\u061F]\s*/, "");
     // Arabic option letter + bare space: "أ الرياح"
     t = t.replace(new RegExp("^" + AR_OPTION_LETTER + "\\s+"), "");
-    // English letter + paren/dot/colon: "A) " "A. " "A: "
-    t = t.replace(/^[A-Za-z]{1,2}[\)\.\uFF1A:]\s*/, "");
+    // English letter + paren/dot/colon/dash: "A) " "A. " "A: " "C- "
+    t = t.replace(/^[A-Za-z]{1,2}[\)\.\-–—\uFF1A:]\s*/, "");
     // English option letter + bare space: "A murder"
     t = t.replace(/^[A-Da-d]\s+/, "");
     return t.trim();
@@ -187,9 +187,10 @@ export function parseDocText(raw: string): ParsedBlock[] {
   const hasOptionPrefix = (s: string): boolean =>
     /^(?:[\u0660-\u0669]{1,2}|\d{1,2})[\-\.\)\uFF1D\uFF1A:]\s*\S/.test(s) ||
     /^(?:[\u0660-\u0669]{1,2}|\d{1,2})(?=[\u0621-\u064A])/.test(s) ||
-    /^[\u0621-\u064A][\)\.\uFF1A:]\s*\S/.test(s) ||
+    /^[\u0621-\u064A][\)\.\-–—\uFF1A:\u061F]\s*\S/.test(s) ||
     new RegExp("^" + AR_OPTION_LETTER + "\\s+(?=\\S)").test(s) ||
-    /^(?:[\u0621-\u064A]{1,2}|[A-Za-z]{1,2})[\)\uFF1A:]\s*\S/.test(s) ||
+    /^(?:[\u0621-\u064A]{1,2}|[A-Za-z]{1,2})[\)\.\-–—\uFF1A:]\s*\S/.test(s) ||
+    /^[A-Da-d][\)\.\-–—\uFF1A:]\s*\S/.test(s) ||
     /^[A-Da-d]\s+(?=\S)/.test(s);
 
   /*==============================================================================
@@ -309,7 +310,7 @@ export function parseDocText(raw: string): ParsedBlock[] {
     نعيد كتلة سؤال واحدة لكل مجموعة قبل المعالجة العامة.
   ==============================================================================*/
   const OPTION_LETTER_LINE_RE =
-    /^[\[٠-٩]*\s*(?:\[\[HL\]\]\s*)?([أإآاهـدجزحطييكلمنسعفرصقشثخذضظغ]|[A-Da-d])(?:\s*[\)\.\uFF1A:])?(?:\s*\[\[\/HL\]\])?$/;
+    /^[\[٠-٩]*\s*(?:\[\[HL\]\]\s*)?([أإآابهـدجزحطييكلمنسعفرصقشثخذضظغ]|[A-Da-d])(?:\s*[\)\.\-–—\uFF1A:؟])?(?:\s*\[\[\/HL\]\])?$/;
 
   const isOptionLetterLine = (s: string): boolean => OPTION_LETTER_LINE_RE.test(s);
 
@@ -332,9 +333,74 @@ export function parseDocText(raw: string): ParsedBlock[] {
     return true;
   };
 
+  /*==============================================================================
+    خيارات مدمجة في سطر واحد (الشكلان الأفقي والمختلط):
+      "1. سيلان : دم   أ) عمل : تجارة   ب) جنيه : قرش   د) حجر : رخام"
+      "خيار3 د) خيار4" (سطران في واحد داخل خلية جدول)
+    تُفصل عند علامات الحروف (أ) ب. ج- وA) B. C- ونظائرها بالنقطة والقوس
+    والنقطتين، مع الحفاظ الحرفي على نص كل خيار ونص السؤال قبل أول علامة.
+    لا تُ considers الترقيم الرقمي "1." علامة خيار.
+  ==============================================================================*/
+  const INLINE_MARKER_RE =
+    /(?:^|[\s\u00A0\t])(?:\[\[HL\]\])?\s*([\u0621-\u064A]|[A-Da-d])[\)\.\-–—\uFF1A:\u061F](?=[\s\u00A0\t]*(?:\[\[HL\]\])?[\u0621-\u064A A-Za-z])/g;
+
+  type InlineMark = { markStart: number; textStart: number; hlMarker: boolean };
+
+  /** مواقع علامات الخيارات داخل السطر (الترقيم الرقمي ليس علامة خيار) */
+  const inlineMarkerMarks = (s: string): InlineMark[] => {
+    const marks: InlineMark[] = [];
+    INLINE_MARKER_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = INLINE_MARKER_RE.exec(s)) !== null) {
+      marks.push({
+        markStart: m.index,
+        textStart: m.index + m[0].length,
+        hlMarker: m[0].includes("[[HL]]"),
+      });
+    }
+    return marks;
+  };
+
+  /** خيارات السطر المدمجة بعد أول علامة خيار (بلا نص ما قبلها) */
+  const segmentsFromMarks = (raw: string, marks: InlineMark[]): Array<{ text: string; hl: boolean }> => {
+    const segs: Array<{ text: string; hl: boolean }> = [];
+    for (let mi = 0; mi < marks.length; mi++) {
+      const segRaw = raw.slice(
+        marks[mi].textStart,
+        mi + 1 < marks.length ? marks[mi + 1].markStart : raw.length,
+      );
+      const segText = extractOptionText(stripHL(segRaw).trim());
+      if (!segText) continue;
+      segs.push({
+        text: segText,
+        hl: marks[mi].hlMarker || segRaw.includes("[[HL]]"),
+      });
+    }
+    return segs;
+  };
+
+  /**
+   * سؤال بصيغة أفقية: نص السؤال ثم خياراته كلها في السطر نفسه.
+   * "1. سيلان : دم   أ) عمل : تجارة   ب) جنيه : قرش   ج) قطار : سفر   د) حجر : رخام"
+   */
+  const splitInlineQuestionLine = (
+    raw: string,
+  ): { title: string; segs: Array<{ text: string; hl: boolean }> } | null => {
+    const marks = inlineMarkerMarks(raw);
+    if (marks.length < 2) return null;
+    const title = stripSourceNumber(stripHL(raw.slice(0, marks[0].markStart))).trim();
+    // العنوان يجب أن يكون نص سؤال حقيقياً لا مقدمة فقرة نثرية
+    if (title.length < 2 || title.length > 200) return null;
+    const segs = segmentsFromMarks(raw, marks);
+    if (segs.length < 2) return null;
+    return { title, segs };
+  };
+
   /**
    * حاول تجميع صف جدول سؤال يبدأ عند السطر i.
    * يعيد null إذا لم تكن مجموعة أسئلة صحيحة (2+ خيارات).
+   * يدعم الحروف المنفصلة عن نصوصها، وتكرار الحرف (بنية Word القديمة
+   * mc:Fallback)، والسؤال غير المرقّم (auto-numbering في Word بلا "1." نصّي).
    */
   const tryParseTableQuestion = (
     start: number,
@@ -345,40 +411,55 @@ export function parseDocText(raw: string): ParsedBlock[] {
     const options: string[] = [];
     const correct: string[] = [];
     let labeledCount = 0; // عدد الخيارات التي لها تسمية حرف على سطر مستقل
+    let firstLetterIdx = -1; // ترتيب أول حرف خيار (أ=0) — يكشف دور السطر الأم
     let j = start + 1;
-
-    // إذا كان نص السؤال نفسه خيار تناظر "كلمة : كلمة" (أو مظللاً) فهو الخيار (أ)
-    // — شائع في أسئلة التناظر اللفظي: عمود الجدول الأول يحمل الخيار المظلل.
-    const stemClean0 = stripHL(stemRaw).trim();
-    const stemIsAnalogy = /^[^:：]{2,40}[:：]\s*[^:：]{2,40}$/.test(stemClean0);
-    if (stemIsAnalogy || hasHL(stemRaw)) {
-      const optText = extractOptionText(stemClean0);
-      if (optText && optText.length > 0) {
-        options.push(optText);
-        if (hasHL(stemRaw)) correct.push(optText);
-      }
-    }
 
     while (j < n) {
       const raw = lines[j];
       const clean = stripHL(raw).trim();
       if (!clean) { j++; continue; }
 
-      // حرف خيار منفصل (أ/ب/ج/د) — النص يليه على السطر التالي
+      // حرف خيار منفصل (أ/ب/ج/د) — نصّه على السطر التالي
       if (isOptionLetterLine(clean)) {
-        // ابحث عن نص الخيار بعد هذا الحرف (تخطِّ الفواصل)
+        // تخطِّ الحروف المكرّرة المتتالية (بنية Word البديلة mc:Fallback)
+        // والفراغات حتى نصل إلى نص الخيار الفعلي
         let k = j + 1;
-        while (k < n && !stripHL(lines[k]).trim()) k++;
+        while (k < n) {
+          const t = stripHL(lines[k]).trim();
+          if (!t || isOptionLetterLine(t)) { k++; continue; }
+          break;
+        }
         if (k >= n) break;
         const textRaw = lines[k];
         const textClean = stripHL(textRaw).trim();
         if (!isOptionTextLine(textClean)) break;
-        const optText = extractOptionText(textClean);
-        if (optText) {
-          options.push(optText);
+
+        if (firstLetterIdx < 0) {
+          const lm = clean.match(OPTION_LETTER_LINE_RE);
+          const li = lm ? letterToIndex(lm[1]) : undefined;
+          firstLetterIdx = li ?? 0;
+        }
+
+        // نص الخيار يحوي خيارات مدمجة إضافية ("خيار3 د) خيار4") — فصّلها كلها
+        let pieces: Array<{ text: string; hl: boolean }> | null = null;
+        const textMarks = inlineMarkerMarks(textRaw);
+        if (textMarks.length >= 1) {
+          pieces = [];
+          const head = extractOptionText(stripHL(textRaw.slice(0, textMarks[0].markStart)).trim());
+          if (head) pieces.push({ text: head, hl: hasHL(textRaw) });
+          for (const seg of segmentsFromMarks(textRaw, textMarks)) {
+            pieces.push({ ...seg, hl: seg.hl || hasHL(textRaw) });
+          }
+          if (pieces.length === 0) pieces = null;
+        }
+        if (!pieces) pieces = [{ text: extractOptionText(textClean), hl: hasHL(textRaw) }];
+
+        for (const piece of pieces) {
+          if (!piece.text) continue;
+          options.push(piece.text);
           labeledCount++;
           // الحرف أو النص مظللاً = الإجابة الصحيحة
-          if (hasHL(raw) || hasHL(textRaw)) correct.push(optText);
+          if (piece.hl || hasHL(raw)) correct.push(piece.text);
         }
         j = k + 1;
         if (options.length >= 4) break;
@@ -392,11 +473,25 @@ export function parseDocText(raw: string): ParsedBlock[] {
     // أسطر مستقلة (بُعد جدول حقيقي). وإلا نترك الإدخال للمُعالج العام كي لا
     // يبتلع صيغ الربط (القلم : كتابة أ الورق) أو التناظر البسيط.
     if (labeledCount < 2) return null;
+
+    // السطر الأم نفسه خيار (أ) فقط إذا بدأت الحروف من "ب" فما فوق — أي أن
+    //عمود السؤال يحمل الخيار المظلل ولا يوجد سطر سؤال منفصل (أسئلة تناظر).
+    // أمّا عندما تبدأ الحروف من "أ" فالسطر هو نص السؤال نفسه.
+    const stemClean0 = stripHL(stemRaw).trim();
+    const stemIsAnalogy = /^[^:：]{2,40}[:：]\s*[^:：]{2,40}$/.test(stemClean0);
+    const stemIsOption = firstLetterIdx >= 1 && (stemIsAnalogy || hasHL(stemRaw));
+    if (stemIsOption) {
+      const optText = extractOptionText(stemClean0);
+      if (optText) {
+        options.unshift(optText);
+        if (hasHL(stemRaw)) correct.unshift(optText);
+      }
+    }
+
     if (options.length < 2) return null;
     // العنوان نص السؤال الأصلي (لا نحذف الخيار المُظلل من العنوان).
     const title = stripSourceNumber(stripHL(stemRaw)).trim();
     if (!title) return null;
-    const stemIsOption = (stemIsAnalogy || hasHL(stemRaw)) && options.length > 0;
     return { title, options, correct, stemIsOption, end: j };
   };
 
@@ -421,6 +516,117 @@ export function parseDocText(raw: string): ParsedBlock[] {
     if (!/^[\u0621-\u064A0-9A-Za-z]/.test(tailClean)) return { before: s, option: null, highlighted: false };
     const highlighted = s.slice(m.index).includes("[[HL]]");
     return { before, option: tailClean, highlighted };
+  };
+
+  /*==============================================================================
+    متابعة جمع خيارات السؤال من سطر startJ فما بعد — تُستخدم مرتين:
+      (1) المسار العام: سؤال عادي يتبعه أسطر خيارات (allowLoneLetter=false).
+      (2) الصيغة المختلطة: سطر أفقي اكتمل جزء من خياراته ثم تتابع على أسطر
+          منفصلة بحرف على سطر مستقل ونصه بعده (allowLoneLetter=true).
+    تتوقف عند 4 خيارات أو سؤال/قسم/مفتاح إجابة/نهاية القائمة.
+  ==============================================================================*/
+  const collectTrailingOptions = (
+    startJ: number,
+    seed: { options: string[]; correct: string[]; prefixedCount: number },
+    opts: { allowLoneLetter: boolean; maxTotal: number },
+  ): { end: number; options: string[]; correct: string[] } => {
+    const options = [...seed.options];
+    const correct = [...seed.correct];
+    let prefixedCount = seed.prefixedCount;
+    let j = startJ;
+
+    while (j < n && options.length < opts.maxTotal) {
+      const optRaw = lines[j];
+      const optClean = stripHL(optRaw);
+      if (!optClean) { j++; continue; }
+
+      // سطر مفتاح إجابة بعد الخيارات — لا يُبتلع كخيار
+      if (isAnswerLine(optClean)) break;
+
+      // stop at next question (digit+dot, digit+space, section header)
+      if (isQuestionNumberLine(optClean) || isSectionHeader(optClean)) break;
+      // stop at the start of an intro/passage block
+      if (PASSAGE_MARK_RE.test(optClean) || PASSAGE_TITLE_RE.test(optClean)) break;
+      if (optClean.length > 80) break;
+      if (/[?\u061F]\s*$/.test(optClean)) break;
+
+      // خيار صح/خطأ منفصل بدون بادئة حرف ("صح" / "(خطأ)")
+      if (TF_WORD_RE.test(optClean)) {
+        const w = normalizeTFWord(optClean);
+        options.push(w);
+        if (hasHL(optRaw)) correct.push(w);
+        j++;
+        prefixedCount++;
+        continue;
+      }
+
+      // حرف خيار منفصل يليه نص "صح"/"خطأ" (تنسيق جدول لسؤال صح-خطأ)
+      if (isOptionLetterLine(optClean)) {
+        let k = j + 1;
+        while (k < n && !stripHL(lines[k]).trim()) k++;
+        if (k < n && TF_WORD_RE.test(stripHL(lines[k]).trim())) {
+          const w = normalizeTFWord(stripHL(lines[k]).trim());
+          options.push(w);
+          if (hasHL(optRaw) || hasHL(lines[k])) correct.push(w);
+          j = k + 1;
+          prefixedCount++;
+          continue;
+        }
+        // الصيغة المختلطة: حرف منفصل ثم سطر نص الخيار ("ج" / "الجمل")
+        if (opts.allowLoneLetter && k < n) {
+          const textRaw = lines[k];
+          const textClean = stripHL(textRaw).trim();
+          if (isOptionTextLine(textClean)) {
+            const optText = extractOptionText(textClean);
+            if (optText) {
+              options.push(optText);
+              if (hasHL(optRaw) || hasHL(textRaw)) correct.push(optText);
+              j = k + 1;
+              prefixedCount++;
+              continue;
+            }
+          }
+        }
+        break;
+      }
+
+      // خيارات متعددة مدمجة في سطر واحد (تنسيق مختلط): "ج) خيار3 د) خيار4"
+      // سطر يبدأ بنص سؤال ثم خياراته = بداية سؤال أفقي جديد (لا يُبتلع هنا)
+      const optMarks = inlineMarkerMarks(optRaw);
+      if (optMarks.length >= 1) {
+        const headText = stripHL(optRaw.slice(0, optMarks[0].markStart)).trim();
+        const multiSegs = segmentsFromMarks(optRaw, optMarks);
+        if (headText.length >= 2 && multiSegs.length >= 1) break; // سؤال أفقي جديد
+        if (multiSegs.length >= 2) {
+          for (const seg of multiSegs) {
+            options.push(seg.text);
+            if (seg.hl || hasHL(optRaw)) correct.push(seg.text);
+          }
+          prefixedCount += multiSegs.length;
+          j++;
+          if (options.length >= opts.maxTotal) break;
+          continue;
+        }
+      }
+
+      const prefixed = hasOptionPrefix(optClean);
+      const hasColon = /^[^:]{1,60}[:\uFF1A]\s*[^:]{1,60}$/.test(optClean);
+
+      // prefixed options always accepted; bare "word : word" only before any prefixed option
+      const isOpt = prefixed || (hasColon && prefixedCount === 0);
+      if (!isOpt) break;
+
+      const optText = extractOptionText(optClean);
+      if (optText.length > 0) {
+        options.push(optText);
+        if (hasHL(optRaw)) correct.push(optText);
+        if (prefixed) prefixedCount++;
+      }
+      j++;
+      if (options.length >= opts.maxTotal) break; // standard MCQ count
+    }
+
+    return { end: j, options, correct };
   };
 
   while (i < n) {
@@ -519,6 +725,45 @@ export function parseDocText(raw: string): ParsedBlock[] {
     }
     // =====================================================================
 
+    // ===== سؤال بصيغة أفقية: نص السؤال + خياراته كلها في سطر واحد =====
+    // "1. سيلان : دم   أ) عمل : تجارة   ب) جنيه : قرش   د) حجر : رخام"
+    const inlineQ = splitInlineQuestionLine(cur);
+    if (inlineQ) {
+      let hOptions = inlineQ.segs.map((s) => s.text);
+      let hCorrect = inlineQ.segs.filter((s) => s.hl).map((s) => s.text);
+      let inlineEnd = i + 1;
+      if (hOptions.length < 4) {
+        const more = collectTrailingOptions(
+          i + 1,
+          { options: hOptions, correct: hCorrect, prefixedCount: hOptions.length },
+          { allowLoneLetter: true, maxTotal: 4 },
+        );
+        hOptions = more.options;
+        hCorrect = more.correct;
+        inlineEnd = more.end;
+      }
+      questionNumber++;
+      const tfUniqueH = [...new Set(hOptions.map(normalizeTFWord))].filter((w) =>
+        TF_WORDS_SET.has(w),
+      );
+      const isTFH =
+        hOptions.every((o) => TF_WORDS_SET.has(normalizeTFWord(o))) && tfUniqueH.length >= 2;
+      blocks.push({
+        kind: isTFH ? "truefalse" : "radio",
+        title: questionNumber + ". " + inlineQ.title,
+        options: isTFH ? tfUniqueH : hOptions,
+        correct: isTFH
+          ? [...new Set(hCorrect.map(normalizeTFWord))].filter((w) => TF_WORDS_SET.has(w))
+          : hCorrect.length > 0
+            ? hCorrect
+            : undefined,
+        required: true,
+        sourceNo: extractSourceNo(cur),
+      });
+      i = inlineEnd;
+      continue;
+    }
+
     // ===== تجميع صف جدول سؤال (4 أعمدة) — أولوية على المعالجة العامة =====
     const tableQ = tryParseTableQuestion(i);
     if (tableQ) {
@@ -537,67 +782,14 @@ export function parseDocText(raw: string): ParsedBlock[] {
     // =====================================================================
 
     // lookahead: collect option lines following this line
-    const options: string[] = [];
-    const correctAnswer: string[] = [];
-    let prefixedCount = 0;
-    let j = i + 1;
-
-    while (j < n) {
-      const optRaw = lines[j];
-      const optClean = stripHL(optRaw);
-      if (!optClean) { j++; continue; }
-
-      // سطر مفتاح إجابة بعد الخيارات — لا يُبتلع كخيار
-      if (isAnswerLine(optClean)) break;
-
-      // stop at next question (digit+dot, digit+space, section header)
-      if (isQuestionNumberLine(optClean) || isSectionHeader(optClean)) break;
-      // stop at the start of an intro/passage block
-      if (PASSAGE_MARK_RE.test(optClean) || PASSAGE_TITLE_RE.test(optClean)) break;
-      if (optClean.length > 80) break;
-      if (/[?\u061F]\s*$/.test(optClean)) break;
-
-      // خيار صح/خطأ منفصل بدون بادئة حرف ("صح" / "(خطأ)")
-      if (TF_WORD_RE.test(optClean)) {
-        const w = normalizeTFWord(optClean);
-        options.push(w);
-        if (hasHL(optRaw)) correctAnswer.push(w);
-        j++;
-        prefixedCount++;
-        continue;
-      }
-
-      // حرف خيار منفصل يليه نص "صح"/"خطأ" (تنسيق جدول لسؤال صح-خطأ)
-      if (isOptionLetterLine(optClean)) {
-        let k = j + 1;
-        while (k < n && !stripHL(lines[k]).trim()) k++;
-        if (k < n && TF_WORD_RE.test(stripHL(lines[k]).trim())) {
-          const w = normalizeTFWord(stripHL(lines[k]).trim());
-          options.push(w);
-          if (hasHL(optRaw) || hasHL(lines[k])) correctAnswer.push(w);
-          j = k + 1;
-          prefixedCount++;
-          continue;
-        }
-        break;
-      }
-
-      const prefixed = hasOptionPrefix(optClean);
-      const hasColon = /^[^:]{1,60}[:\uFF1A]\s*[^:]{1,60}$/.test(optClean);
-
-      // prefixed options always accepted; bare "word : word" only before any prefixed option
-      const isOpt = prefixed || (hasColon && prefixedCount === 0);
-      if (!isOpt) break;
-
-      const optText = extractOptionText(optClean);
-      if (optText.length > 0) {
-        options.push(optText);
-        if (hasHL(optRaw)) correctAnswer.push(optText);
-        if (prefixed) prefixedCount++;
-      }
-      j++;
-      if (options.length >= 4) break;  // standard MCQ count
-    }
+    const collected = collectTrailingOptions(
+      i + 1,
+      { options: [], correct: [], prefixedCount: 0 },
+      { allowLoneLetter: false, maxTotal: 4 },
+    );
+    const options = collected.options;
+    const correctAnswer = collected.correct;
+    const j = collected.end;
 
     // if 2+ options found, this line is a QUESTION
     if (options.length >= 2) {
