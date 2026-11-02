@@ -577,7 +577,7 @@ export function DocImportDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[calc(100vw-1rem)] sm:w-[calc(100vw-2rem)] max-w-4xl h-[92dvh] sm:h-[85dvh] flex flex-col gap-3 overflow-y-auto p-4 sm:p-6 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent">
+      <DialogContent className="w-[calc(100vw-1rem)] sm:w-[calc(100vw-2rem)] max-w-4xl h-[92dvh] sm:h-[85dvh] flex flex-col gap-3 overflow-x-hidden overflow-y-auto p-4 sm:p-6 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent">
         <DialogClose />
         <DialogHeader className="shrink-0 sticky top-0 z-10 bg-background -mx-4 sm:-mx-6 px-4 sm:px-6 py-1">
           <DialogTitle className="flex items-center gap-2">
@@ -859,7 +859,7 @@ export function DocImportDialog({
                     value={rawText}
                     readOnly
                     rows={8}
-                    className="w-full border-t border-border bg-background px-3 py-2 font-mono text-xs leading-relaxed outline-none"
+                    className="w-full max-w-full overflow-x-auto border-t border-border bg-background px-3 py-2 font-mono text-xs leading-relaxed outline-none"
                   />
                 )}
                 {/* وضع التصحيح: text خام / after تنظيف / نتيجة المُحلّل */}
@@ -918,7 +918,7 @@ export function DocImportDialog({
                       }
                       readOnly
                       rows={10}
-                      className="w-full border-t border-border bg-background px-3 py-2 font-mono text-xs leading-relaxed outline-none"
+                      className="w-full max-w-full overflow-x-auto border-t border-border bg-background px-3 py-2 font-mono text-xs leading-relaxed outline-none"
                     />
                   </div>
                 )}
